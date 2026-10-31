@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <title>物品購入届</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Google Fonts（デザインは 02.ロッカーキー貸出管理(Gemini) に合わせる。plan/05 §0） -->
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <?!= include('css'); ?>
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- ヘッダー -->
+    <header class="app-header">
+      <div class="header-logo">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="logo-icon">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z" />
+        </svg>
+        <h1 id="app-title">物品購入届</h1>
+      </div>
+      <div class="header-actions">
+        <div class="operator-box">
+          <label for="operator-select" class="operator-label">操作者</label>
+          <select id="operator-select" class="operator-select" onchange="onOperatorChange()"></select>
+        </div>
+        <div id="auth-status" class="auth-status" style="display:none;">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="auth-icon">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+          </svg>
+          <span id="auth-remaining">認証中</span>
+          <button type="button" class="btn-secondary btn-sm" onclick="logoutAuth()">解除</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- タブ -->
+    <nav class="app-tabs main-tabs" id="main-tabs">
+      <button class="tab-btn active" data-tab="new" onclick="switchTab('new')">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="tab-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+        新規入力
+      </button>
+      <button class="tab-btn" data-tab="list" onclick="switchTab('list')">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="tab-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" /></svg>
+        入力データ一覧
+      </button>
+      <button class="tab-btn" data-tab="approved" onclick="switchTab('approved')">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="tab-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        承認済一覧
+      </button>
+      <button class="tab-btn" data-tab="reflected" onclick="switchTab('reflected')">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="tab-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" /></svg>
+        システム反映済一覧
+      </button>
+      <button class="tab-btn" data-tab="admin" id="tab-btn-admin" style="display:none;" onclick="switchTab('admin')">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="tab-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" /></svg>
+        マスタ管理
+      </button>
+    </nav>
+
+    <!-- ===================== 新規入力 ===================== -->
+    <section class="tab-view active" id="view-new">
+      <div class="view-header view-header-flex">
+        <div>
+          <h2 id="form-title">新規入力</h2>
+          <p id="form-subtitle">物品購入届を入力します。<span class="badge-required">必須</span> の項目は、入力完了・承認依頼のときに必要です。</p>
+        </div>
+        <button type="button" class="btn-secondary btn-sm" id="btn-back-new" style="display:none;" onclick="resetForm()">＋ 新規入力に戻る</button>
+      </div>
+
+      <div id="form-meta" class="form-meta" style="display:none;"></div>
+      <div id="reject-notice" class="alert-notice danger" style="display:none;"></div>
+      <div id="readonly-notice" class="alert-notice" style="display:none;"></div>
+
+      <form class="card-panel request-form" id="request-form" onsubmit="return false;" autocomplete="off">
+        <h3 class="form-section-title">届出の基本情報</h3>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="f-deptCode">部門 <span class="badge-required">必須</span></label>
+            <select id="f-deptCode" onchange="onDeptChange()"></select>
+            <div class="field-error" id="err-deptCode"></div>
+          </div>
+          <div class="form-group">
+            <label for="f-categoryCode">種別 <span class="badge-required">必須</span></label>
+            <select id="f-categoryCode"></select>
+            <div class="field-error" id="err-categoryCode"></div>
+          </div>
+          <div class="form-group">
+            <label>入力者 <span class="badge-optional">自動</span></label>
+            <div class="static-field" id="f-applicant">-</div>
+          </div>
+          <div class="form-group">
+            <label for="f-approverId">承認者 <span class="badge-required">必須</span></label>
+            <select id="f-approverId"></select>
+            <div class="field-hint danger" id="approver-missing" style="display:none;">この部署の承認者が登録されていません。管理者に連絡してください</div>
+            <div class="field-error" id="err-approverId"></div>
+          </div>
+        </div>
+
+        <h3 class="form-section-title">発注先・納入先</h3>
+        <div class="form-grid-2">
+          <div class="form-group party-group" id="party-supplier">
+            <label>発注先 <span class="badge-required">必須</span></label>
+            <div class="radio-group">
+              <label class="radio-pill"><input type="radio" name="supplierType" value="マスタ" onchange="onPartyTypeChange('supplier')"> マスタから選ぶ</label>
+              <label class="radio-pill"><input type="radio" name="supplierType" value="手入力" onchange="onPartyTypeChange('supplier')"> 手入力</label>
+              <label class="radio-pill"><input type="radio" name="supplierType" value="指定なし" onchange="onPartyTypeChange('supplier')"> 指定なし</label>
+            </div>
+            <div class="combo" id="supplier-combo" style="display:none;">
+              <div class="input-with-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="input-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                <input type="text" id="f-supplier-search" placeholder="名称・カナ・略称・コードで検索">
+              </div>
+              <div class="combo-list" id="supplier-combo-list"></div>
+              <div class="combo-selected" id="supplier-selected"></div>
+            </div>
+            <input type="text" id="f-supplierName" class="party-manual" placeholder="発注先の名称（100文字以内）" style="display:none;">
+            <input type="hidden" id="f-supplierCode"><input type="hidden" id="f-supplierBranch">
+            <div class="field-error" id="err-supplier"></div>
+          </div>
+          <div class="form-group party-group" id="party-delivery">
+            <label>納入先 <span class="badge-required">必須</span></label>
+            <div class="radio-group">
+              <label class="radio-pill"><input type="radio" name="deliveryType" value="マスタ" onchange="onPartyTypeChange('delivery')"> マスタから選ぶ</label>
+              <label class="radio-pill"><input type="radio" name="deliveryType" value="手入力" onchange="onPartyTypeChange('delivery')"> 手入力</label>
+              <label class="radio-pill"><input type="radio" name="deliveryType" value="指定なし" onchange="onPartyTypeChange('delivery')"> 指定なし</label>
+            </div>
+            <div class="combo" id="delivery-combo" style="display:none;">
+              <div class="input-with-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="input-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                <input type="text" id="f-delivery-search" placeholder="名称・コードで検索">
+              </div>
+              <div class="combo-list" id="delivery-combo-list"></div>
+              <div class="combo-selected" id="delivery-selected"></div>
+            </div>
+            <input type="text" id="f-deliveryName" class="party-manual" placeholder="納入先の名称（100文字以内）" style="display:none;">
+            <input type="hidden" id="f-deliveryCode"><input type="hidden" id="f-deliveryBranch">
+            <div class="field-error" id="err-delivery"></div>
+          </div>
+        </div>
+
+        <h3 class="form-section-title">購入する物品</h3>
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="f-itemName">購入物品名 <span class="badge-required">必須</span></label>
+            <input type="text" id="f-itemName" maxlength="100" placeholder="例: ボールペン（黒）">
+            <div class="field-error" id="err-itemName"></div>
+          </div>
+          <div class="form-group">
+            <label for="f-modelNo">型番 <span class="badge-optional">任意</span></label>
+            <input type="text" id="f-modelNo" maxlength="100" placeholder="例: SXN-150-07">
+            <div class="field-error" id="err-modelNo"></div>
+          </div>
+        </div>
+        <div class="form-grid-3">
+          <div class="form-group">
+            <label for="f-quantity">数量 <span class="badge-required">必須</span></label>
+            <input type="text" id="f-quantity" inputmode="decimal" placeholder="例: 10" onblur="normalizeQuantityInput()">
+            <div class="field-error" id="err-quantity"></div>
+          </div>
+          <div class="form-group">
+            <label for="f-unitNote">単位・補足 <span class="badge-optional">任意</span></label>
+            <input type="text" id="f-unitNote" maxlength="20" placeholder="例: 箱、一式">
+            <div class="field-error" id="err-unitNote"></div>
+          </div>
+          <div class="form-group">
+            <label for="f-deliveryDate">納品日 <span class="badge-optional">任意</span></label>
+            <input type="date" id="f-deliveryDate">
+            <div class="field-hint">未入力なら、CSVの納期は提出日の月末になります</div>
+            <div class="field-error" id="err-deliveryDate"></div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="f-reason">理由 <span class="badge-required">必須</span></label>
+          <textarea id="f-reason" rows="3" maxlength="500" placeholder="購入が必要な理由（500文字以内）"></textarea>
+          <div class="field-error" id="err-reason"></div>
+        </div>
+
+        <h3 class="form-section-title">添付書類</h3>
+        <div class="form-grid-2">
+          <div class="form-group attach-group">
+            <label>添付1（見積書など金額がわかるもの） <span class="badge-optional">任意</span></label>
+            <div class="attach-row">
+              <label class="btn-secondary btn-sm file-btn">ファイルを選ぶ<input type="file" id="f-att1" onchange="onAttachSelected(1)"></label>
+              <div class="attach-current" id="att1-current"></div>
+            </div>
+          </div>
+          <div class="form-group attach-group">
+            <label>添付2（納品書） <span class="badge-optional">任意</span></label>
+            <div class="attach-row">
+              <label class="btn-secondary btn-sm file-btn">ファイルを選ぶ<input type="file" id="f-att2" onchange="onAttachSelected(2)"></label>
+              <div class="attach-current" id="att2-current"></div>
+            </div>
+          </div>
+        </div>
+        <div class="field-hint" id="attach-hint"></div>
+
+        <div class="form-actions" id="form-buttons"></div>
+      </form>
+    </section>
+
+    <!-- ===================== 入力データ一覧 ===================== -->
+    <section class="tab-view" id="view-list">
+      <div class="view-header">
+        <h2>入力データ一覧</h2>
+        <p>すべての届出を表示します（削除したものは除く）。行の色はステータスを表します。</p>
+      </div>
+      <div class="card-panel">
+        <div class="filter-row">
+          <span class="filter-box-label">クイック</span>
+          <button type="button" class="filter-btn" data-quick="mine" onclick="toggleQuick('mine')">自分の届出</button>
+          <button type="button" class="filter-btn" data-quick="toApprove" onclick="toggleQuick('toApprove')">自分が承認する承認依頼中</button>
+        </div>
+        <div class="filter-row" id="status-filter-row">
+          <span class="filter-box-label">ステータス</span>
+        </div>
+        <div class="logs-filter-container">
+          <div class="search-input-box">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="search-box-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+            <input type="text" class="search-box-input" id="lf-keyword" placeholder="購入物品名で検索" oninput="renderRequestList()">
+          </div>
+          <select class="filter-box-select" id="lf-dept" onchange="renderRequestList()"></select>
+          <select class="filter-box-select" id="lf-category" onchange="renderRequestList()"></select>
+          <select class="filter-box-select" id="lf-applicant" onchange="renderRequestList()"></select>
+          <select class="filter-box-select" id="lf-approver" onchange="renderRequestList()"></select>
+          <input type="text" class="filter-box-date filter-text" id="lf-supplier" placeholder="発注先" oninput="renderRequestList()">
+          <div class="filter-group-date">
+            <span class="filter-box-label">提出日</span>
+            <input type="date" class="filter-box-date" id="lf-from" onchange="renderRequestList()">
+            <span class="date-separator">〜</span>
+            <input type="date" class="filter-box-date" id="lf-to" onchange="renderRequestList()">
+          </div>
+          <button type="button" class="filter-reset-btn" onclick="resetListFilters()">リセット</button>
+        </div>
+        <div class="list-meta"><span id="list-count"></span><button type="button" class="btn-secondary btn-sm" onclick="loadList('ALL')">再読み込み</button></div>
+        <div class="table-container">
+          <table class="data-table" id="list-table">
+            <thead><tr>
+              <th data-sort="requestId">届出ID</th><th data-sort="status">ステータス</th><th data-sort="submittedDate">提出日</th>
+              <th data-sort="deptName">部門</th><th data-sort="categoryName">種別</th><th data-sort="applicantName">入力者</th>
+              <th data-sort="approverName">承認者</th><th data-sort="supplierName">発注先</th><th data-sort="deliveryName">納入先</th>
+              <th data-sort="itemName">購入物品名</th><th data-sort="quantity">数量</th><th data-sort="deliveryDate">納品日</th>
+              <th data-sort="attCount">添付</th><th data-sort="updatedAt">更新日時</th><th class="action-head">操作</th>
+            </tr></thead>
+            <tbody id="list-body"><tr><td colspan="15" class="table-loading">読み込み中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== 承認済一覧 ===================== -->
+    <section class="tab-view" id="view-approved">
+      <div class="view-header">
+        <h2>承認済一覧</h2>
+        <p>CSV出力を待っている届出です。経理担当・管理者は資材コードと取引先コードを確定・補完してからCSVを出力します。</p>
+      </div>
+      <div class="card-panel">
+        <div class="logs-filter-container">
+          <select class="filter-box-select" id="af-dept" onchange="renderApprovedList()"></select>
+          <input type="text" class="filter-box-date filter-text" id="af-supplier" placeholder="発注先" oninput="renderApprovedList()">
+          <div class="filter-group-date">
+            <span class="filter-box-label">提出日</span>
+            <input type="date" class="filter-box-date" id="af-from" onchange="renderApprovedList()">
+            <span class="date-separator">〜</span>
+            <input type="date" class="filter-box-date" id="af-to" onchange="renderApprovedList()">
+          </div>
+          <select class="filter-box-select" id="af-csv" onchange="renderApprovedList()">
+            <option value="">CSV出力: すべて</option><option value="done">CSV出力: 済</option><option value="not">CSV出力: 未</option>
+          </select>
+          <button type="button" class="filter-reset-btn" onclick="resetApprovedFilters()">リセット</button>
+        </div>
+        <div class="bulk-action-bar">
+          <div class="bulk-select-status">選択中 <strong id="approved-selected-count">0</strong> 件 <span id="approved-count" class="muted"></span></div>
+          <div class="action-btn-group">
+            <button type="button" class="btn-secondary btn-sm" onclick="loadList('APPROVED')">再読み込み</button>
+            <button type="button" class="btn-primary btn-sm" id="btn-export-approved" onclick="exportSelected('approved')">CSV出力</button>
+            <button type="button" class="btn-primary btn-sm btn-success" id="btn-mark-reflected" onclick="markSelectedReflected()">反映済にする</button>
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="data-table" id="approved-table">
+            <thead><tr>
+              <th class="checkbox-cell"><input type="checkbox" id="approved-check-all" onchange="toggleSelectAll('approved', this.checked)"></th>
+              <th data-sort="requestId">届出ID</th><th data-sort="submittedDate">提出日</th><th data-sort="deptName">部門</th>
+              <th data-sort="supplierName">発注先</th><th data-sort="deliveryName">納入先</th><th data-sort="itemName">購入物品名</th>
+              <th data-sort="modelNo">型番</th><th data-sort="materialCode">資材コード</th><th data-sort="packQty">入数</th>
+              <th data-sort="quantity">数量</th><th data-sort="dueDate">納期</th><th data-sort="csvExportedAt">CSV出力</th><th class="action-head">操作</th>
+            </tr></thead>
+            <tbody id="approved-body"><tr><td colspan="14" class="table-loading">読み込み中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== システム反映済一覧 ===================== -->
+    <section class="tab-view" id="view-reflected">
+      <div class="view-header">
+        <h2>システム反映済一覧</h2>
+        <p>販売管理システムへ反映済みの届出です（閲覧のみ）。経理担当・管理者はCSVを再出力でき、管理者は「承認済に戻す」ができます。</p>
+      </div>
+      <div class="card-panel">
+        <div class="logs-filter-container">
+          <select class="filter-box-select" id="rf-dept" onchange="renderReflectedList()"></select>
+          <input type="text" class="filter-box-date filter-text" id="rf-supplier" placeholder="発注先" oninput="renderReflectedList()">
+          <div class="filter-group-date">
+            <span class="filter-box-label">反映済日</span>
+            <input type="date" class="filter-box-date" id="rf-from" onchange="renderReflectedList()">
+            <span class="date-separator">〜</span>
+            <input type="date" class="filter-box-date" id="rf-to" onchange="renderReflectedList()">
+          </div>
+          <button type="button" class="filter-reset-btn" onclick="resetReflectedFilters()">リセット</button>
+        </div>
+        <div class="bulk-action-bar">
+          <div class="bulk-select-status">選択中 <strong id="reflected-selected-count">0</strong> 件 <span id="reflected-count" class="muted"></span></div>
+          <div class="action-btn-group">
+            <button type="button" class="btn-secondary btn-sm" onclick="loadList('REFLECTED')">再読み込み</button>
+            <button type="button" class="btn-primary btn-sm" id="btn-export-reflected" onclick="exportSelected('reflected')">CSV再出力</button>
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="data-table" id="reflected-table">
+            <thead><tr>
+              <th class="checkbox-cell"><input type="checkbox" id="reflected-check-all" onchange="toggleSelectAll('reflected', this.checked)"></th>
+              <th data-sort="requestId">届出ID</th><th data-sort="submittedDate">提出日</th><th data-sort="deptName">部門</th>
+              <th data-sort="supplierName">発注先</th><th data-sort="deliveryName">納入先</th><th data-sort="itemName">購入物品名</th>
+              <th data-sort="materialCode">資材コード</th><th data-sort="quantity">数量</th><th data-sort="dueDate">納期</th>
+              <th data-sort="csvExportedAt">CSV出力</th><th data-sort="reflectedAt">反映済日時</th><th data-sort="reflectedByName">反映操作者</th><th class="action-head">操作</th>
+            </tr></thead>
+            <tbody id="reflected-body"><tr><td colspan="14" class="table-loading">読み込み中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== マスタ管理 ===================== -->
+    <section class="tab-view" id="view-admin">
+      <div class="view-header">
+        <h2>マスタ管理</h2>
+        <p>マスタの取込、暗証番号の発行、設定の確認を行います。承認者対応表・権限・部署・種別・納入先・設定の編集は、スプレッドシートで直接行います。</p>
+      </div>
+      <div class="card-panel admin-auth-box" id="admin-auth-box">
+        <div class="auth-icon-circle">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
+        </div>
+        <h3>管理者の認証</h3>
+        <p>マスタ管理を開くには、管理者の暗証番号が必要です。</p>
+        <button type="button" class="btn-primary btn-full" onclick="openAdmin(true)">暗証番号を入力して開く</button>
+      </div>
+      <div id="admin-content" style="display:none;">
+        <nav class="admin-subtabs-nav">
+          <button type="button" class="admin-subtab-btn active" data-sub="import" onclick="switchAdminSub('import')">マスタ取込</button>
+          <button type="button" class="admin-subtab-btn" data-sub="pin" onclick="switchAdminSub('pin')">暗証番号の発行</button>
+          <button type="button" class="admin-subtab-btn" data-sub="settings" onclick="switchAdminSub('settings')">設定の閲覧</button>
+        </nav>
+        <div class="admin-subview active" id="admin-sub-import">
+          <div class="card-panel">
+            <h3 class="form-section-title">マスタ取込</h3>
+            <p class="muted small">ドライブの「物品購入届/マスタ取込」フォルダに置いたCSVを取り込みます（資材マスター.csv・取引先マスター.csv・365User.csv）。</p>
+            <div class="action-btn-group wrap">
+              <button type="button" class="btn-primary" onclick="adminImport('ALL')">すべて取り込む</button>
+              <button type="button" class="btn-secondary" onclick="adminImport('MATERIALS')">資材</button>
+              <button type="button" class="btn-secondary" onclick="adminImport('SUPPLIERS')">発注先</button>
+              <button type="button" class="btn-secondary" onclick="adminImport('EMPLOYEES')">社員</button>
+            </div>
+            <div class="table-container admin-result" id="admin-import-result"></div>
+          </div>
+        </div>
+        <div class="admin-subview" id="admin-sub-pin">
+          <div class="card-panel">
+            <h3 class="form-section-title">暗証番号の発行・再発行</h3>
+            <p class="muted small">承認者・管理者・経理として操作する社員に発行します。発行した暗証番号は1回だけ表示されます。</p>
+            <div class="form-grid-3">
+              <div class="form-group">
+                <label for="pin-employee">社員</label>
+                <select id="pin-employee"></select>
+              </div>
+              <div class="form-group form-group-button">
+                <button type="button" class="btn-primary" onclick="adminIssuePinClick()">発行する</button>
+              </div>
+            </div>
+            <div class="pin-result" id="pin-result" style="display:none;"></div>
+          </div>
+        </div>
+        <div class="admin-subview" id="admin-sub-settings">
+          <div class="card-panel">
+            <div class="table-header-flex">
+              <h3 class="form-section-title no-border">設定（読み取り専用）</h3>
+              <a href="#" class="manual-link-btn" id="sheet-link" target="_blank" rel="noopener">スプレッドシートを開く</a>
+            </div>
+            <div class="table-container" id="admin-settings"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ===================== モーダル ===================== -->
+  <!-- 詳細 -->
+  <div class="modal-overlay" id="detail-modal" style="display:none;">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3 id="detail-title">届出の詳細</h3>
+        <button type="button" class="modal-close-btn" onclick="closeModal('detail-modal')">×</button>
+      </div>
+      <div class="modal-body" id="detail-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeModal('detail-modal')">閉じる</button>
+        <button type="button" class="btn-primary" id="detail-edit-btn">修正する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 差し戻し理由 -->
+  <div class="modal-overlay" id="reject-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>差し戻し</h3>
+        <button type="button" class="modal-close-btn" onclick="resolveReject(null)">×</button>
+      </div>
+      <div class="form-group">
+        <label for="reject-reason">差し戻し理由 <span class="badge-required">必須</span></label>
+        <textarea id="reject-reason" rows="4" maxlength="500" placeholder="入力者に修正してほしい内容（500文字以内）"></textarea>
+        <div class="field-error" id="err-rejectReason"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="resolveReject(null)">キャンセル</button>
+        <button type="button" class="btn-primary btn-danger-solid" onclick="submitReject()">差し戻す</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 資材の確定 -->
+  <div class="modal-overlay" id="material-modal" style="display:none;">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3 id="material-title">資材コードの確定</h3>
+        <button type="button" class="modal-close-btn" onclick="closeModal('material-modal')">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="target-box" id="material-target"></div>
+        <div class="dialog-section-head">
+          <h4>候補（システムが選んだもの）</h4>
+          <button type="button" class="btn-secondary btn-sm" onclick="recalcMaterial()">候補を再計算</button>
+        </div>
+        <div class="choice-list" id="material-candidates"></div>
+        <div class="dialog-section-head"><h4>資材マスタを検索</h4></div>
+        <div class="logs-filter-container compact">
+          <div class="search-input-box">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="search-box-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+            <input type="text" class="search-box-input" id="mat-keyword" placeholder="資材名・コード">
+          </div>
+          <select class="filter-box-select" id="mat-category"></select>
+          <select class="filter-box-select" id="mat-dept"></select>
+          <button type="button" class="btn-secondary btn-sm" onclick="searchMaterialClick()">検索</button>
+        </div>
+        <div class="choice-list" id="material-search-results"></div>
+        <label class="choice-item none-choice"><input type="radio" name="mat-choice" value="NONE"> <span><strong>資材なしで確定</strong><br><small class="muted">CSVの資材コード・入数は空白になります</small></span></label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeModal('material-modal')">キャンセル</button>
+        <button type="button" class="btn-primary" onclick="submitMaterial()">確定する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- コード補完 -->
+  <div class="modal-overlay" id="code-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>発注先・納入先コードの補完</h3>
+        <button type="button" class="modal-close-btn" onclick="closeModal('code-modal')">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="target-box" id="code-target"></div>
+        <div class="form-group">
+          <label>発注先コード</label>
+          <div class="muted small" id="code-supplier-current"></div>
+          <div class="combo">
+            <div class="input-with-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="input-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+              <input type="text" id="code-supplier-search" placeholder="取引先を検索（非表示の取引先も含む）">
+            </div>
+            <div class="combo-list" id="code-supplier-list"></div>
+            <div class="combo-selected" id="code-supplier-selected"></div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="code-delivery">納入先コード</label>
+          <div class="muted small" id="code-delivery-current"></div>
+          <select id="code-delivery"></select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeModal('code-modal')">キャンセル</button>
+        <button type="button" class="btn-primary" onclick="submitCodes()">確定する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 暗証番号 -->
+  <div class="modal-overlay modal-top" id="pin-modal" style="display:none;">
+    <div class="modal-card modal-confirm">
+      <div class="confirm-icon-box primary">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
+      </div>
+      <h3>暗証番号の入力</h3>
+      <p>承認者・管理者・経理として操作するには、暗証番号が必要です。<br>操作者: <strong id="pin-operator-name"></strong></p>
+      <div class="form-group">
+        <input type="password" id="pin-input" class="pin-input" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="暗証番号">
+        <div class="field-error center" id="pin-error"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="pin-cancel">キャンセル</button>
+        <button type="button" class="btn-primary" id="pin-ok">認証する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添付のプレビュー -->
+  <div class="modal-overlay" id="preview-modal" style="display:none;">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3 id="preview-title">添付書類</h3>
+        <button type="button" class="modal-close-btn" onclick="closePreview()">×</button>
+      </div>
+      <div class="preview-body" id="preview-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closePreview()">閉じる</button>
+        <button type="button" class="btn-primary" id="preview-download">ダウンロード</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 確認ダイアログ（参考アプリと同じ作り） -->
+  <div class="modal-overlay modal-top" id="custom-confirm-modal" style="display:none;">
+    <div class="modal-card modal-confirm">
+      <div class="confirm-icon-box" id="confirm-icon-box">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+      </div>
+      <h3 id="confirm-title">確認</h3>
+      <p id="confirm-message"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="btn-confirm-cancel">キャンセル</button>
+        <button type="button" class="btn-primary" id="btn-confirm-ok">実行する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ローディング・トースト -->
+  <div class="loading-overlay" id="app-loading-overlay" style="display:none;">
+    <div class="spinner"></div>
+    <div class="loading-message" id="loading-message">処理中です...</div>
+  </div>
+  <div class="toast-container" id="toast-container"></div>
+
+  <?!= include('js'); ?>
+</body>
+</html>

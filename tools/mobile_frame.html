@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>幅375pxの確認用フレーム</title>
+  <style>
+    body { margin: 0; background: #cbd5e1; display: flex; justify-content: center; }
+    iframe { width: 375px; height: 2300px; border: none; background: #fff; }
+  </style>
+</head>
+<body>
+  <!-- 確認用: 幅375pxで local_preview.html を表示する（K-33）。?tab=new のように開くタブを指定できる -->
+  <iframe id="f"></iframe>
+  <script>
+    var q = location.search.replace(/^\?/, '') || 'tab=new&op=nyuryoku';
+    document.getElementById('f').src = '../local_preview.html#' + q;
+  </script>
+</body>
+</html>

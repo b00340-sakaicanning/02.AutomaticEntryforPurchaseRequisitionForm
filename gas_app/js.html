@@ -1,0 +1,1421 @@
+<script>
+  // =========================================================================
+  // 物品購入届CSV出力アプリ - 画面制御 (js.html)
+  // 版: v1.0 2026/10/31
+  // 仕様: plan/05_画面仕様.md、plan/06_サーバーAPI仕様.md §10
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // 1. 状態
+  // -------------------------------------------------------------------------
+  const APP = {
+    init: null,
+    operatorId: '',
+    auth: null,
+    tab: 'new',
+    form: { request: null, pending: { 1: null, 2: null }, noApprover: false },
+    lists: { ALL: null, APPROVED: null, REFLECTED: null },
+    listFilter: { statuses: [], quick: '' },
+    sort: {
+      list: { key: 'updatedAt', dir: -1 },
+      approved: { key: 'requestId', dir: 1 },
+      reflected: { key: 'reflectedAt', dir: -1 }
+    },
+    selected: { approved: new Set(), reflected: new Set() },
+    adminReady: false,
+    loadingDepth: 0,
+    material: null,
+    code: null
+  };
+  const STORAGE_OPERATOR = 'prOperatorId';
+  const STORAGE_AUTH = 'prAuth';
+  const NEW = '(新規)';
+
+  function $(id) { return document.getElementById(id); }
+  function storageGet(store, key) { try { return window[store].getItem(key); } catch (e) { return null; } }
+  function storageSet(store, key, val) { try { window[store].setItem(key, val); } catch (e) { /* 保存できない環境 */ } }
+  function storageRemove(store, key) { try { window[store].removeItem(key); } catch (e) { /* 無視 */ } }
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+  }
+  function normalizeSearch(s) {
+    return String(s || '').normalize('NFKC').toLowerCase()
+      .replace(/[ァ-ヶ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0x60); })
+      .replace(/\s+/g, '');
+  }
+  function toHalfWidth(s) {
+    return String(s == null ? '' : s).replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/　/g, ' ');
+  }
+  function dateToSlash(v) { return v ? String(v).replace(/-/g, '/') : ''; }
+  function dateToInput(v) { return v ? String(v).replace(/\//g, '-') : ''; }
+
+  // -------------------------------------------------------------------------
+  // 2. サーバー呼び出し（google.script.run を Promise にする。plan/05 §1.3）
+  // -------------------------------------------------------------------------
+  function callServer_(fn, args) {
+    return new Promise(function (resolve) {
+      const runner = google.script.run
+        .withSuccessHandler(function (res) { resolve(res || { ok: false, error: { code: 'SYSTEM', message: '応答がありません' } }); })
+        .withFailureHandler(function (e) { resolve({ ok: false, error: { code: 'SYSTEM', message: (e && e.message) ? e.message : String(e) } }); });
+      runner[fn].apply(runner, args);
+    });
+  }
+
+  function ctx() { return { operatorId: APP.operatorId, token: APP.auth ? APP.auth.token : null }; }
+
+  /** API の呼び出し。AUTH_REQUIRED なら暗証番号を聞いてやり直す。失敗したら error を throw する */
+  async function api(fn) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    const noCtx = (fn === 'getInitData' || fn === 'authenticate');
+    let res = await callServer_(fn, noCtx ? args : [ctx()].concat(args));
+    if (!res.ok && res.error.code === 'AUTH_REQUIRED') {
+      const wasLoading = APP.loadingDepth > 0;
+      if (wasLoading) $('app-loading-overlay').style.display = 'none';
+      const ok = await promptPin();
+      if (wasLoading) $('app-loading-overlay').style.display = 'flex';
+      if (!ok) { const err = new Error('キャンセルしました'); err.code = 'CANCELLED'; throw err; }
+      res = await callServer_(fn, [ctx()].concat(args));
+    }
+    if (!res.ok) {
+      const err = new Error(res.error.message);
+      err.code = res.error.code;
+      err.fields = res.error.fields;
+      throw err;
+    }
+    return res.data;
+  }
+
+  /** ローディングを出して処理し、エラーはトーストで知らせる */
+  async function run(message, fn) {
+    toggleLoading(true, message);
+    try {
+      return await fn();
+    } catch (e) {
+      handleError(e);
+      return undefined;
+    } finally {
+      toggleLoading(false);
+    }
+  }
+
+  function handleError(e) {
+    if (!e) return;
+    if (e.code === 'CANCELLED') { showToast('キャンセルしました', 'warning'); return; }
+    if (e.code === 'VALIDATION' && e.fields && Object.keys(e.fields).length) { showToast(e.message || '入力内容を確認してください', 'error'); return; }
+    if (e.code === 'CONFLICT') { showToast(e.message + '\n（最新の内容を読み直します）', 'error'); refreshCurrentTab(true); return; }
+    showToast(e.message || String(e), 'error');
+  }
+
+  // -------------------------------------------------------------------------
+  // 3. 起動・操作者・認証
+  // -------------------------------------------------------------------------
+  document.addEventListener('DOMContentLoaded', initApp);
+
+  async function initApp() {
+    toggleLoading(true, '読み込み中です...');
+    try {
+      APP.init = await api('getInitData');
+    } catch (e) {
+      toggleLoading(false);
+      document.querySelector('.app-container').insertAdjacentHTML('afterbegin',
+        '<div class="alert-notice danger"><strong>起動できません。</strong> ' + escapeHtml(e.message) + '<br>スプレッドシートのメニュー「物品購入届 &gt; 初期セットアップ」を実行してください。</div>');
+      return;
+    }
+    toggleLoading(false);
+    $('app-title').textContent = APP.init.appName || '物品購入届';
+    document.title = APP.init.appName || '物品購入届';
+    buildOperatorSelect();
+    restoreOperator();
+    buildStaticOptions();
+    setupCombo('supplier');
+    setupCombo('delivery');
+    setupCodeDialogCombo();
+    setupSortHeaders();
+    setupPinModal();
+    resetForm();
+    const m = String(location.hash || '').match(/tab=(\w+)/);
+    switchTab(m ? m[1] : 'new');
+    setInterval(updateAuthStatus, 30000);
+  }
+
+  async function reloadInitData() {
+    APP.init = await api('getInitData');
+    buildOperatorSelect();
+    restoreOperator();
+    buildStaticOptions();
+  }
+
+  function buildOperatorSelect() {
+    const sel = $('operator-select');
+    const groups = {};
+    APP.init.employees.forEach(function (e) { const g = e.division || 'その他'; (groups[g] = groups[g] || []).push(e); });
+    let html = '<option value="">操作者を選択してください</option>';
+    Object.keys(groups).forEach(function (g) {
+      html += '<optgroup label="' + escapeHtml(g) + '">' + groups[g].map(function (e) {
+        return '<option value="' + escapeHtml(e.employeeId) + '">' + escapeHtml(e.name) + '（' + escapeHtml(e.section || '課なし') + '）</option>';
+      }).join('') + '</optgroup>';
+    });
+    sel.innerHTML = html;
+  }
+
+  function restoreOperator() {
+    const saved = APP.operatorId || storageGet('localStorage', STORAGE_OPERATOR) || '';
+    const exists = APP.init.employees.some(function (e) { return e.employeeId === saved; });
+    APP.operatorId = exists ? saved : '';
+    $('operator-select').value = APP.operatorId;
+    loadAuth();
+    updateRoleUi();
+  }
+
+  function onOperatorChange() {
+    APP.operatorId = $('operator-select').value;
+    storageSet('localStorage', STORAGE_OPERATOR, APP.operatorId);
+    clearAuth();
+    APP.adminReady = false;
+    APP.selected.approved.clear();
+    APP.selected.reflected.clear();
+    updateRoleUi();
+    if (!APP.form.request) resetForm(); else renderForm(APP.form.request);
+    if (APP.tab === 'admin' && !isAdmin()) switchTab('new'); else refreshCurrentTab(false);
+  }
+
+  function employee(id) { return APP.init.employees.filter(function (e) { return e.employeeId === id; })[0] || null; }
+  function employeeName(id) { const e = employee(id); return e ? e.name : (id || ''); }
+  function isAdmin() { return APP.init.roleHolders.admins.indexOf(APP.operatorId) >= 0; }
+  function isAccounting() { return APP.init.roleHolders.accountings.indexOf(APP.operatorId) >= 0; }
+
+  function updateRoleUi() {
+    $('tab-btn-admin').style.display = isAdmin() ? '' : 'none';
+    updateAuthStatus();
+  }
+
+  function loadAuth() {
+    APP.auth = null;
+    try {
+      const a = JSON.parse(storageGet('sessionStorage', STORAGE_AUTH) || 'null');
+      if (a && a.operatorId === APP.operatorId && a.expiresAtMs > Date.now()) APP.auth = a;
+    } catch (e) { APP.auth = null; }
+  }
+  function clearAuth() {
+    APP.auth = null;
+    storageRemove('sessionStorage', STORAGE_AUTH);
+    updateAuthStatus();
+  }
+  function updateAuthStatus() {
+    if (APP.auth && APP.auth.expiresAtMs <= Date.now()) { APP.auth = null; storageRemove('sessionStorage', STORAGE_AUTH); APP.adminReady = false; }
+    const box = $('auth-status');
+    if (APP.auth) {
+      const min = Math.max(1, Math.ceil((APP.auth.expiresAtMs - Date.now()) / 60000));
+      $('auth-remaining').textContent = '認証中（残り' + min + '分）';
+      box.style.display = 'inline-flex';
+    } else {
+      box.style.display = 'none';
+    }
+  }
+  async function logoutAuth() {
+    if (APP.auth) await callServer_('logout', [ctx()]);
+    clearAuth();
+    APP.adminReady = false;
+    if (APP.tab === 'admin') showAdminLocked();
+    showToast('認証を解除しました', 'info');
+  }
+
+  // 暗証番号ダイアログ（plan/05 §2）
+  let pinResolver = null;
+  function setupPinModal() {
+    $('pin-ok').addEventListener('click', submitPin);
+    $('pin-cancel').addEventListener('click', function () { closePin(false); });
+    $('pin-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitPin(); });
+  }
+  function promptPin() {
+    if (!APP.operatorId) { showToast('先に操作者を選択してください', 'error'); return Promise.resolve(false); }
+    return new Promise(function (resolve) {
+      pinResolver = resolve;
+      $('pin-operator-name').textContent = employeeName(APP.operatorId);
+      $('pin-input').value = '';
+      $('pin-error').textContent = '';
+      $('pin-modal').style.display = 'flex';
+      setTimeout(function () { $('pin-input').focus(); }, 50);
+    });
+  }
+  async function submitPin() {
+    const pin = $('pin-input').value.trim();
+    if (!pin) { $('pin-error').textContent = '暗証番号を入力してください'; return; }
+    $('pin-ok').disabled = true;
+    const res = await callServer_('authenticate', [APP.operatorId, pin]);
+    $('pin-ok').disabled = false;
+    if (!res.ok) { $('pin-error').textContent = res.error.message; $('pin-input').select(); return; }
+    APP.auth = { operatorId: APP.operatorId, token: res.data.token, expiresAtMs: res.data.expiresAtMs };
+    storageSet('sessionStorage', STORAGE_AUTH, JSON.stringify(APP.auth));
+    updateAuthStatus();
+    closePin(true);
+  }
+  function closePin(ok) {
+    $('pin-modal').style.display = 'none';
+    if (pinResolver) { const r = pinResolver; pinResolver = null; r(ok); }
+  }
+
+  // -------------------------------------------------------------------------
+  // 4. 権限の判定（サーバーと同じ表。plan/04 §3.2）
+  // -------------------------------------------------------------------------
+  function clientRoles(req) {
+    const op = APP.operatorId;
+    return {
+      applicant: !req || req.applicantId === op,
+      approver: !!req && !!req.approverId && req.approverId === op && req.applicantId !== op,
+      admin: isAdmin(),
+      accounting: isAccounting()
+    };
+  }
+  /** {ok, reason} を返す */
+  function canDo(action, req) {
+    if (!APP.operatorId) return { ok: false, reason: '操作者を選択してください' };
+    const status = req ? req.status : NEW;
+    const table = APP.init.permissions[action] || {};
+    const allowed = table[status];
+    if (!allowed) return { ok: false, reason: '「' + status + '」では行えません' };
+    const roles = clientRoles(req);
+    if (allowed.some(function (r) { return roles[r]; })) return { ok: true, reason: '' };
+    const labels = { applicant: '入力者', approver: '指定された承認者', admin: '管理者', accounting: '経理担当' };
+    return { ok: false, reason: allowed.map(function (r) { return labels[r]; }).join('・') + 'だけが行えます' };
+  }
+  function canEdit(req) {
+    if (!req) return canDo('SAVE_DRAFT', null).ok;
+    return ['SAVE_DRAFT', 'COMPLETE', 'EDIT'].some(function (a) { return canDo(a, req).ok; });
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. タブ
+  // -------------------------------------------------------------------------
+  function switchTab(name) {
+    if (['new', 'list', 'approved', 'reflected', 'admin'].indexOf(name) < 0) name = 'new';
+    if (name === 'admin' && !isAdmin()) name = 'new';
+    APP.tab = name;
+    document.querySelectorAll('#main-tabs .tab-btn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === name); });
+    document.querySelectorAll('.tab-view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + name); });
+    refreshCurrentTab(false);
+  }
+
+  function refreshCurrentTab(force) {
+    if (!APP.operatorId && APP.tab !== 'new') {
+      ['list-body', 'approved-body', 'reflected-body'].forEach(function (id) {
+        $(id).innerHTML = '<tr><td colspan="15" class="table-empty">画面上部で操作者を選択してください</td></tr>';
+      });
+      return;
+    }
+    if (APP.tab === 'list') loadList('ALL');
+    else if (APP.tab === 'approved') loadList('APPROVED');
+    else if (APP.tab === 'reflected') loadList('REFLECTED');
+    else if (APP.tab === 'admin') openAdmin(false);
+    else if (APP.tab === 'new' && force && APP.form.request) openEdit(APP.form.request.requestId);
+  }
+
+  function invalidateLists() { APP.lists.ALL = null; APP.lists.APPROVED = null; APP.lists.REFLECTED = null; }
+
+  // -------------------------------------------------------------------------
+  // 6. 共通の選択肢・バッジ
+  // -------------------------------------------------------------------------
+  function statusColor(status) { return (APP.init.statusColors || {})[status] || { bg: '#f1f5f9', fg: '#475569' }; }
+  function statusBadge(status) {
+    const c = statusColor(status);
+    return '<span class="status-badge" style="background:' + c.bg + ';color:' + c.fg + '">' + escapeHtml(status) + '</span>';
+  }
+  function options(list, valueKey, labelFn, placeholder) {
+    return (placeholder !== undefined ? '<option value="">' + escapeHtml(placeholder) + '</option>' : '') +
+      list.map(function (x) { return '<option value="' + escapeHtml(x[valueKey]) + '">' + escapeHtml(labelFn(x)) + '</option>'; }).join('');
+  }
+  function buildStaticOptions() {
+    const deptLabel = function (d) { return d.deptName + (d.division ? '（' + d.division + '）' : ''); };
+    $('f-deptCode').innerHTML = options(APP.init.departments, 'deptCode', deptLabel, '部門を選択');
+    $('f-categoryCode').innerHTML = options(APP.init.categories, 'categoryCode', function (c) { return c.categoryName; }, '種別を選択');
+    ['lf-dept', 'af-dept', 'rf-dept'].forEach(function (id) { $(id).innerHTML = options(APP.init.departments, 'deptCode', function (d) { return d.deptName; }, '部門: すべて'); });
+    $('lf-category').innerHTML = options(APP.init.categories, 'categoryCode', function (c) { return c.categoryName; }, '種別: すべて');
+    $('mat-category').innerHTML = options(APP.init.categories, 'categoryCode', function (c) { return c.categoryName; }, '種別: すべて');
+    $('mat-dept').innerHTML = options(APP.init.departments, 'deptCode', function (d) { return d.deptName; }, '部門: すべて');
+    $('code-delivery').innerHTML = '<option value="__KEEP__">（変更しない）</option><option value="">（コードを空にする）</option>' +
+      APP.init.deliveries.map(function (d, i) { return '<option value="' + i + '">' + escapeHtml(d.name) + ' ／ ' + escapeHtml(d.code + (d.branch ? '-' + d.branch : '')) + '</option>'; }).join('');
+    $('pin-employee').innerHTML = options(APP.init.employees, 'employeeId', function (e) { return e.name + '（' + (e.section || '課なし') + '）'; }, '社員を選択');
+    const sf = $('status-filter-row');
+    sf.querySelectorAll('.filter-btn').forEach(function (b) { b.remove(); });
+    APP.init.statuses.forEach(function (st) {
+      const c = statusColor(st);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'filter-btn';
+      b.setAttribute('data-status', st);
+      b.innerHTML = '<span class="dot" style="background:' + c.fg + '"></span>' + escapeHtml(st);
+      b.onclick = function () { toggleStatusFilter(st); };
+      sf.appendChild(b);
+    });
+    const ext = APP.init.limits.attachmentAllowedExt;
+    $('attach-hint').textContent = '添付できるのは ' + ext + '、1ファイル' + APP.init.limits.attachmentMaxMb + 'MBまでです。新規の届出は、保存した後にアップロードします。';
+  }
+
+  // -------------------------------------------------------------------------
+  // 7. 新規入力・修正モード（plan/05 §3）
+  // -------------------------------------------------------------------------
+  function resetForm() {
+    APP.form = { request: null, pending: { 1: null, 2: null }, noApprover: false };
+    renderForm(null);
+  }
+
+  function setPartyType(kind, type) {
+    document.querySelectorAll('input[name="' + kind + 'Type"]').forEach(function (r) { r.checked = (r.value === type); });
+    onPartyTypeChange(kind);
+  }
+  function getPartyType(kind) {
+    const r = document.querySelector('input[name="' + kind + 'Type"]:checked');
+    return r ? r.value : '';
+  }
+  function onPartyTypeChange(kind) {
+    const t = getPartyType(kind);
+    $(kind + '-combo').style.display = t === 'マスタ' ? '' : 'none';
+    $('f-' + kind + 'Name').style.display = t === '手入力' ? '' : 'none';
+  }
+
+  function renderForm(req) {
+    const isNew = !req;
+    const editable = canEdit(req);
+    const lockDeptApprover = !!req && (req.status === '承認依頼中' || req.status === '承認済');
+    $('form-title').textContent = isNew ? '新規入力' : '届出の修正';
+    $('btn-back-new').style.display = isNew ? 'none' : '';
+    const meta = $('form-meta');
+    if (isNew) { meta.style.display = 'none'; } else {
+      meta.style.display = 'flex';
+      meta.innerHTML = '<span class="req-id">' + escapeHtml(req.requestId) + '</span>' + statusBadge(req.status) +
+        (req.submittedDate ? '<span class="muted">提出日 ' + escapeHtml(req.submittedDate) + '</span>' : '') +
+        '<span class="muted">更新 ' + escapeHtml(req.updatedAt) + '</span>' +
+        (req.status === '承認済' && req.csvExportCount > 0 && !req.csvExported ? '<span class="warn-badge red">要再出力</span>' : '');
+    }
+    const rej = $('reject-notice');
+    if (req && req.status === '差し戻し' && req.rejectReason) {
+      rej.style.display = '';
+      rej.innerHTML = '<strong>差し戻し理由:</strong> ' + escapeHtml(req.rejectReason);
+    } else rej.style.display = 'none';
+    const ro = $('readonly-notice');
+    if (!APP.operatorId) { ro.style.display = ''; ro.innerHTML = '画面上部で<strong>操作者</strong>を選択してください。'; }
+    else if (!editable) { ro.style.display = ''; ro.innerHTML = 'この届出は、今の操作者では修正できません（' + escapeHtml(req ? req.status : '') + '）。'; }
+    else if (lockDeptApprover) { ro.style.display = ''; ro.innerHTML = '承認依頼中・承認済の届出では、<strong>部門と承認者は変更できません</strong>。変更するときは差し戻し、または承認取消をしてください。'; }
+    else ro.style.display = 'none';
+
+    const op = employee(APP.operatorId);
+    const r = req || {};
+    $('f-applicant').textContent = isNew ? (op ? op.name : '（操作者を選択してください）') : (r.applicantName || '');
+    let dept = r.deptCode || (op && APP.init.departments.some(function (d) { return d.deptCode === op.defaultDeptCode; }) ? op.defaultDeptCode : '');
+    if (dept && !APP.init.departments.some(function (d) { return d.deptCode === dept; })) {
+      $('f-deptCode').insertAdjacentHTML('beforeend', '<option value="' + escapeHtml(dept) + '">' + escapeHtml(r.deptName || dept) + '（無効）</option>');
+    }
+    $('f-deptCode').value = dept;
+    $('f-categoryCode').value = r.categoryCode || '';
+    updateApproverOptions(r.approverId || '', isNew ? APP.operatorId : r.applicantId, r);
+    setPartyType('supplier', r.supplierType || '');
+    setPartyFields('supplier', r);
+    setPartyType('delivery', r.deliveryType || '');
+    setPartyFields('delivery', r);
+    $('f-itemName').value = r.itemName || '';
+    $('f-modelNo').value = r.modelNo || '';
+    $('f-quantity').value = r.quantity || '';
+    $('f-unitNote').value = r.unitNote || '';
+    $('f-deliveryDate').value = dateToInput(r.deliveryDate);
+    $('f-reason').value = r.reason || '';
+    APP.form.pending = { 1: null, 2: null };
+    $('f-att1').value = ''; $('f-att2').value = '';
+    renderAttachments();
+
+    const form = $('request-form');
+    form.querySelectorAll('input, select, textarea').forEach(function (el) {
+      if (el.type === 'hidden') return;
+      el.disabled = !editable || !APP.operatorId;
+    });
+    if (lockDeptApprover) { $('f-deptCode').disabled = true; $('f-approverId').disabled = true; }
+    document.querySelectorAll('.file-btn').forEach(function (b) { b.classList.toggle('disabled', !editable || !APP.operatorId); });
+    clearFieldErrors();
+    renderFormButtons(req);
+  }
+
+  function setPartyFields(kind, r) {
+    $('f-' + kind + 'Code').value = r[kind + 'Code'] || '';
+    $('f-' + kind + 'Branch').value = r[kind + 'Branch'] || '';
+    $('f-' + kind + 'Name').value = r[kind + 'Type'] === '手入力' ? (r[kind + 'Name'] || '') : '';
+    $('f-' + kind + '-search').value = r[kind + 'Type'] === 'マスタ' ? (r[kind + 'Name'] || '') : '';
+    renderComboSelected(kind);
+  }
+
+  function onDeptChange() {
+    const req = APP.form.request;
+    updateApproverOptions('', req ? req.applicantId : APP.operatorId, req);
+    renderFormButtons(req);
+  }
+
+  /** 承認者の候補（plan/04 §4.3。候補が1人なら自動、複数なら優先順が最小の人） */
+  function updateApproverOptions(keep, applicantId, req) {
+    const dept = $('f-deptCode').value;
+    const enabledIds = APP.init.employees.map(function (e) { return e.employeeId; });
+    const cands = APP.init.approvers
+      .filter(function (a) { return a.deptCode === dept && a.approverId !== applicantId && enabledIds.indexOf(a.approverId) >= 0; })
+      .sort(function (a, b) { return (a.priority || 0) - (b.priority || 0); });
+    const sel = $('f-approverId');
+    let html = cands.length ? '' : '<option value="">' + (dept ? '承認者がいません' : '先に部門を選択') + '</option>';
+    html += cands.map(function (a) { return '<option value="' + escapeHtml(a.approverId) + '">' + escapeHtml(employeeName(a.approverId)) + '</option>'; }).join('');
+    if (keep && !cands.some(function (a) { return a.approverId === keep; })) {
+      html += '<option value="' + escapeHtml(keep) + '">' + escapeHtml((req && req.approverName) || employeeName(keep)) + '（対応表に無い）</option>';
+    }
+    sel.innerHTML = html;
+    sel.value = keep || (cands[0] ? cands[0].approverId : '');
+    APP.form.noApprover = !!dept && cands.length === 0;
+    $('approver-missing').style.display = APP.form.noApprover ? '' : 'none';
+  }
+
+  function renderFormButtons(req) {
+    const box = $('form-buttons');
+    const btns = [];
+    const add = function (label, cls, onclick, opt) { btns.push({ label: label, cls: cls, onclick: onclick, disabled: opt && opt.disabled, title: opt && opt.title }); };
+    const noApprTitle = 'この部署の承認者が登録されていません';
+    if (!APP.operatorId) { box.innerHTML = ''; return; }
+    if (!req) {
+      add('クリア', 'btn-secondary', 'clearFormClick()');
+      btns.push({ spacer: true });
+      add('一時保存', 'btn-secondary', "saveForm('DRAFT')");
+      add('入力完了', 'btn-primary btn-success', "saveForm('COMPLETE')");
+      add('承認依頼', 'btn-primary', "saveForm('REQUEST')", { disabled: APP.form.noApprover, title: APP.form.noApprover ? noApprTitle : '' });
+    } else {
+      const roles = clientRoles(req);
+      const st = req.status;
+      if ((st === '一時保存' || st === '入力完了') && roles.applicant) {
+        if (canDo('DELETE', req).ok) add('削除', 'btn-secondary btn-danger-outline', "formStatusAction('DELETE')");
+        btns.push({ spacer: true });
+        add('一時保存', 'btn-secondary', "saveForm('DRAFT')");
+        add('入力完了', 'btn-primary btn-success', "saveForm('COMPLETE')");
+        add('承認依頼', 'btn-primary', "saveForm('REQUEST')", { disabled: APP.form.noApprover, title: APP.form.noApprover ? noApprTitle : '' });
+      } else if (st === '差し戻し' && roles.applicant) {
+        btns.push({ spacer: true });
+        add('保存', 'btn-secondary', "saveForm('EDIT')");
+        add('承認依頼', 'btn-primary', "saveForm('REQUEST')", { disabled: APP.form.noApprover, title: APP.form.noApprover ? noApprTitle : '' });
+      } else {
+        if (canDo('DELETE', req).ok) add('削除', 'btn-secondary btn-danger-outline', "formStatusAction('DELETE')");
+        if (canDo('CANCEL_APPROVAL', req).ok) add('承認取消', 'btn-secondary btn-danger-outline', "formStatusAction('CANCEL_APPROVAL')");
+        if (canDo('CANCEL_REQUEST', req).ok) add('承認依頼取消', 'btn-secondary btn-danger-outline', "formStatusAction('CANCEL_REQUEST')");
+        btns.push({ spacer: true });
+        if (canDo('EDIT', req).ok) add('保存', 'btn-secondary', "saveForm('EDIT')");
+        if (canDo('REJECT', req).ok) add('差し戻し', 'btn-secondary btn-danger-outline', "formStatusAction('REJECT')");
+        if (canDo('APPROVE', req).ok) add('承認', 'btn-primary', "formStatusAction('APPROVE')");
+      }
+    }
+    box.innerHTML = btns.map(function (b) {
+      if (b.spacer) return '<span class="spacer"></span>';
+      return '<button type="button" class="' + b.cls + '" onclick="' + b.onclick + '"' + (b.disabled ? ' disabled' : '') + (b.title ? ' title="' + escapeHtml(b.title) + '"' : '') + '>' + escapeHtml(b.label) + '</button>';
+    }).join('');
+  }
+
+  async function clearFormClick() {
+    if (await showCustomConfirm('入力内容のクリア', '入力した内容を消して、最初の状態に戻します。よろしいですか？', { okText: 'クリアする' })) resetForm();
+  }
+
+  function normalizeQuantityInput() {
+    const el = $('f-quantity');
+    el.value = toHalfWidth(el.value).trim();
+  }
+
+  function collectForm() {
+    const req = APP.form.request;
+    return {
+      requestId: req ? req.requestId : '',
+      version: req ? req.version : 0,
+      deptCode: $('f-deptCode').value,
+      categoryCode: $('f-categoryCode').value,
+      approverId: $('f-approverId').value,
+      supplierType: getPartyType('supplier'),
+      supplierCode: $('f-supplierCode').value, supplierBranch: $('f-supplierBranch').value,
+      supplierName: getPartyType('supplier') === '手入力' ? $('f-supplierName').value : '',
+      deliveryType: getPartyType('delivery'),
+      deliveryCode: $('f-deliveryCode').value, deliveryBranch: $('f-deliveryBranch').value,
+      deliveryName: getPartyType('delivery') === '手入力' ? $('f-deliveryName').value : '',
+      itemName: $('f-itemName').value,
+      modelNo: $('f-modelNo').value,
+      quantity: toHalfWidth($('f-quantity').value).trim(),
+      unitNote: $('f-unitNote').value,
+      reason: $('f-reason').value,
+      deliveryDate: dateToSlash($('f-deliveryDate').value)
+    };
+  }
+
+  const FIELD_ERROR_MAP = {
+    supplierType: 'supplier', supplierCode: 'supplier', supplierName: 'supplier',
+    deliveryType: 'delivery', deliveryCode: 'delivery', deliveryName: 'delivery'
+  };
+  function clearFieldErrors() {
+    document.querySelectorAll('#request-form .field-error').forEach(function (el) { el.textContent = ''; });
+    document.querySelectorAll('#request-form .form-group.has-error').forEach(function (el) { el.classList.remove('has-error'); });
+  }
+  function showFieldErrors(fields) {
+    clearFieldErrors();
+    let first = null;
+    Object.keys(fields || {}).forEach(function (k) {
+      const el = $('err-' + (FIELD_ERROR_MAP[k] || k));
+      if (!el) return;
+      el.textContent = fields[k];
+      const g = el.closest('.form-group');
+      if (g) g.classList.add('has-error');
+      if (!first) first = el;
+    });
+    if (first) first.closest('.form-group').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  async function saveForm(mode) {
+    const req = APP.form.request;
+    if (mode === 'EDIT' && req && req.status === '承認済') {
+      const ok = await showCustomConfirm('承認済の届出の修正', '承認済の届出を修正すると、CSVの再出力が必要になります。保存しますか？', { okText: '保存する' });
+      if (!ok) return;
+    }
+    if (mode === 'REQUEST') {
+      const ok = await showCustomConfirm('承認依頼', '承認者「' + ($('f-approverId').selectedOptions[0] ? $('f-approverId').selectedOptions[0].textContent : '') + '」に承認を依頼します。よろしいですか？', { okText: '承認依頼する' });
+      if (!ok) return;
+    }
+    clearFieldErrors();
+    const payload = collectForm();
+    await run('保存しています...', async function () {
+      let res;
+      try {
+        res = await api('saveRequest', payload, mode);
+      } catch (e) {
+        if (e.code === 'VALIDATION') showFieldErrors(e.fields || {});
+        throw e;
+      }
+      let version = res.version;
+      for (const slot of [1, 2]) {
+        const f = APP.form.pending[slot];
+        if (!f) continue;
+        try {
+          const up = await api('uploadAttachment', res.requestId, version, slot, f);
+          version = up.version;
+          APP.form.pending[slot] = null;
+        } catch (e) {
+          showToast('添付' + slot + 'をアップロードできませんでした: ' + e.message, 'error');
+        }
+      }
+      const msg = { DRAFT: '一時保存しました', COMPLETE: '入力完了にしました', REQUEST: '承認依頼しました', EDIT: '保存しました' }[mode];
+      showToast(msg + '（' + res.requestId + '）', 'success');
+      invalidateLists();
+      await openEdit(res.requestId, true);
+    });
+  }
+
+  /** 一覧・詳細から修正モードで開く */
+  async function openEdit(requestId, silent) {
+    const load = async function () {
+      const d = await api('getRequestDetail', requestId);
+      APP.form.request = d.request;
+      renderForm(d.request);
+      if (APP.tab !== 'new') {
+        APP.tab = 'new';
+        document.querySelectorAll('#main-tabs .tab-btn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === 'new'); });
+        document.querySelectorAll('.tab-view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-new'); });
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+    if (silent) return load();
+    return run('読み込み中です...', load);
+  }
+
+  async function formStatusAction(action) {
+    const req = APP.form.request;
+    if (!req) return;
+    await doStatusAction(action, req);
+  }
+
+  // 添付（plan/04 §9）
+  function readFileAsBase64(file) {
+    return new Promise(function (resolve, reject) {
+      const fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result).replace(/^data:[^,]*,/, '')); };
+      fr.onerror = function () { reject(fr.error); };
+      fr.readAsDataURL(file);
+    });
+  }
+  async function onAttachSelected(slot) {
+    const input = $('f-att' + slot);
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const ext = (file.name.match(/\.([^.]+)$/) || ['', ''])[1].toLowerCase();
+    const allowed = APP.init.limits.attachmentAllowedExt.split(',').map(function (s) { return s.trim().toLowerCase(); });
+    if (allowed.indexOf(ext) < 0) { showToast('添付できるのは ' + allowed.join(', ') + ' です', 'error'); input.value = ''; return; }
+    if (file.size > APP.init.limits.attachmentMaxMb * 1024 * 1024) { showToast('ファイルサイズは' + APP.init.limits.attachmentMaxMb + 'MBまでです', 'error'); input.value = ''; return; }
+    const base64 = await readFileAsBase64(file);
+    APP.form.pending[slot] = { name: file.name, mimeType: file.type || 'application/octet-stream', base64: base64 };
+    renderAttachments();
+  }
+  function renderAttachments() {
+    const req = APP.form.request;
+    const editable = canEdit(req) && !!APP.operatorId;
+    [1, 2].forEach(function (slot) {
+      const box = $('att' + slot + '-current');
+      const pending = APP.form.pending[slot];
+      const curName = req ? req['att' + slot + 'FileName'] : '';
+      let html = '';
+      if (curName) {
+        html += '<span class="attach-name">📎 ' + escapeHtml(curName) + '</span>' +
+          '<button type="button" class="btn-edit btn-sm" onclick="viewAttachment(\'' + escapeHtml(req.requestId) + '\',' + slot + ')">表示</button>' +
+          (editable ? '<button type="button" class="btn-danger-outline btn-sm" onclick="deleteAttachmentClick(' + slot + ')">削除</button>' : '');
+      }
+      if (pending) {
+        html += '<span class="attach-name">' + escapeHtml(pending.name) + '</span><span class="attach-pending">（保存時にアップロード' + (curName ? '・差し替え' : '') + '）</span>' +
+          '<button type="button" class="btn-secondary btn-sm" onclick="cancelPending(' + slot + ')">取り消す</button>';
+      }
+      if (!html) html = '<span class="muted small">なし</span>';
+      box.innerHTML = html;
+    });
+  }
+  function cancelPending(slot) { APP.form.pending[slot] = null; $('f-att' + slot).value = ''; renderAttachments(); }
+  async function deleteAttachmentClick(slot) {
+    const req = APP.form.request;
+    if (!req) return;
+    if (!await showCustomConfirm('添付の削除', '添付' + slot + '「' + req['att' + slot + 'FileName'] + '」を削除します（ドライブのゴミ箱へ移します）。', { isDanger: true, okText: '削除する' })) return;
+    await run('削除しています...', async function () {
+      await api('deleteAttachment', req.requestId, req.version, slot);
+      showToast('添付を削除しました', 'success');
+      invalidateLists();
+      await openEdit(req.requestId, true);
+    });
+  }
+  async function viewAttachment(requestId, slot) {
+    await run('添付を読み込んでいます...', async function () {
+      const a = await api('getAttachment', requestId, slot);
+      openPreview(a.fileName, a.mimeType, a.base64);
+    });
+  }
+
+  // 検索付きプルダウン（plan/05 §3.3）
+  function comboItems(kind) { return kind === 'supplier' ? APP.init.suppliers : APP.init.deliveries; }
+  function setupCombo(kind) {
+    const input = $('f-' + kind + '-search');
+    const list = $(kind + '-combo-list');
+    input.addEventListener('input', function () {
+      $('f-' + kind + 'Code').value = '';
+      $('f-' + kind + 'Branch').value = '';
+      renderComboSelected(kind);
+      renderComboList(kind, input.value);
+    });
+    input.addEventListener('focus', function () { renderComboList(kind, input.value); });
+    document.addEventListener('click', function (e) { if (!$(kind + '-combo').contains(e.target)) list.classList.remove('open'); });
+  }
+  function renderComboList(kind, q) {
+    const list = $(kind + '-combo-list');
+    const n = normalizeSearch(q);
+    const items = comboItems(kind).filter(function (x) { return !n || normalizeSearch([x.code, x.name, x.kana, x.abbr].join(' ')).indexOf(n) >= 0; }).slice(0, 30);
+    list.innerHTML = items.length ? items.map(function (x, i) {
+      return '<div class="combo-item" data-i="' + i + '">' + escapeHtml(x.name) + (x.abbr ? '（' + escapeHtml(x.abbr) + '）' : '') +
+        '<span class="combo-code">' + escapeHtml(x.code + (x.branch ? '-' + x.branch : '')) + '</span></div>';
+    }).join('') : '<div class="combo-empty">該当する取引先がありません</div>';
+    list.querySelectorAll('.combo-item').forEach(function (el) {
+      el.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        const x = items[Number(el.getAttribute('data-i'))];
+        $('f-' + kind + 'Code').value = x.code;
+        $('f-' + kind + 'Branch').value = x.branch || '';
+        $('f-' + kind + '-search').value = x.name;
+        list.classList.remove('open');
+        renderComboSelected(kind);
+      });
+    });
+    list.classList.add('open');
+  }
+  function renderComboSelected(kind) {
+    const code = $('f-' + kind + 'Code').value;
+    const branch = $('f-' + kind + 'Branch').value;
+    $(kind + '-selected').innerHTML = code ? '選択中のコード: <strong>' + escapeHtml(code + (branch ? '-' + branch : '')) + '</strong>' : (getPartyType(kind) === 'マスタ' ? '候補から選択してください' : '');
+  }
+
+  // -------------------------------------------------------------------------
+  // 8. 状態の変更（一覧・修正画面・詳細から共通）
+  // -------------------------------------------------------------------------
+  const ACTION_UI = {
+    REQUEST: { title: '承認依頼', msg: 'この届出の承認を依頼します。', ok: '承認依頼する', done: '承認依頼しました' },
+    CANCEL_REQUEST: { title: '承認依頼の取消', msg: '承認依頼を取り消して「入力完了」に戻します。', ok: '取り消す', done: '承認依頼を取り消しました', danger: true },
+    APPROVE: { title: '承認', msg: 'この届出を承認します。', ok: '承認する', done: '承認しました' },
+    CANCEL_APPROVAL: { title: '承認の取消', msg: '承認を取り消して「承認依頼中」に戻します。CSVの出力済の印も外れます。', ok: '承認を取り消す', done: '承認を取り消しました', danger: true },
+    REVERT_REFLECTED: { title: '承認済に戻す', msg: '「システム反映済」を「承認済」に戻します（誤操作の救済）。', ok: '承認済に戻す', done: '承認済に戻しました', danger: true },
+    DELETE: { title: '届出の削除', msg: 'この届出を削除します。一覧に表示されなくなります。', ok: '削除する', done: '削除しました', danger: true }
+  };
+
+  async function doStatusAction(action, req) {
+    let options = {};
+    if (action === 'REJECT') {
+      const reason = await promptRejectReason();
+      if (reason === null) return;
+      options.reason = reason;
+    } else {
+      const u = ACTION_UI[action];
+      const ok = await showCustomConfirm(u.title, req.requestId + '「' + (req.itemName || '') + '」\n' + u.msg, { isDanger: !!u.danger, okText: u.ok });
+      if (!ok) return;
+    }
+    await run('処理しています...', async function () {
+      const r = await api('changeStatus', req.requestId, req.version, action, options);
+      showToast((action === 'REJECT' ? '差し戻しました' : ACTION_UI[action].done) + '（' + req.requestId + '）', 'success');
+      invalidateLists();
+      closeModal('detail-modal');
+      if (APP.tab === 'new' && APP.form.request && APP.form.request.requestId === req.requestId) {
+        if (r.deleted) resetForm(); else await openEdit(req.requestId, true);
+      } else {
+        refreshCurrentTab(false);
+      }
+    });
+  }
+
+  let rejectResolver = null;
+  function promptRejectReason() {
+    return new Promise(function (resolve) {
+      rejectResolver = resolve;
+      $('reject-reason').value = '';
+      $('err-rejectReason').textContent = '';
+      $('reject-modal').style.display = 'flex';
+      setTimeout(function () { $('reject-reason').focus(); }, 50);
+    });
+  }
+  function submitReject() {
+    const v = $('reject-reason').value.trim();
+    if (!v) { $('err-rejectReason').textContent = '差し戻し理由を入力してください'; return; }
+    if (Array.from(v).length > 500) { $('err-rejectReason').textContent = '500文字以内で入力してください'; return; }
+    resolveReject(v);
+  }
+  function resolveReject(v) {
+    $('reject-modal').style.display = 'none';
+    if (rejectResolver) { const r = rejectResolver; rejectResolver = null; r(v); }
+  }
+
+  // -------------------------------------------------------------------------
+  // 9. 一覧（plan/05 §4〜§5）
+  // -------------------------------------------------------------------------
+  async function loadList(tab) {
+    const bodyId = { ALL: 'list-body', APPROVED: 'approved-body', REFLECTED: 'reflected-body' }[tab];
+    $(bodyId).innerHTML = skeletonRows(tab === 'ALL' ? 15 : 14);
+    try {
+      const d = await api('getRequestList', { tab: tab });
+      APP.lists[tab] = d.rows;
+    } catch (e) {
+      $(bodyId).innerHTML = '<tr><td colspan="15" class="table-empty">' + escapeHtml(e.message) + '</td></tr>';
+      return;
+    }
+    if (tab === 'ALL') { buildListPersonOptions(); renderRequestList(); }
+    if (tab === 'APPROVED') renderApprovedList();
+    if (tab === 'REFLECTED') renderReflectedList();
+  }
+  function skeletonRows(cols) {
+    let html = '';
+    for (let i = 0; i < 4; i++) html += '<tr class="skeleton-row">' + new Array(cols).fill('<td><div></div></td>').join('') + '</tr>';
+    return html;
+  }
+
+  function sortRows(rows, s) {
+    return rows.slice().sort(function (a, b) {
+      let x = a[s.key], y = b[s.key];
+      if (s.key === 'quantity' || s.key === 'attCount') { x = Number(x) || 0; y = Number(y) || 0; }
+      else { x = x == null ? '' : String(x); y = y == null ? '' : String(y); }
+      return x < y ? -s.dir : (x > y ? s.dir : 0);
+    });
+  }
+  function setupSortHeaders() {
+    [['list-table', 'list', renderRequestList], ['approved-table', 'approved', renderApprovedList], ['reflected-table', 'reflected', renderReflectedList]].forEach(function (t) {
+      document.querySelectorAll('#' + t[0] + ' th[data-sort]').forEach(function (th) {
+        th.addEventListener('click', function () {
+          const key = th.getAttribute('data-sort');
+          const s = APP.sort[t[1]];
+          if (s.key === key) s.dir = -s.dir; else { s.key = key; s.dir = 1; }
+          t[2]();
+        });
+      });
+    });
+  }
+  function markSortHeader(tableId, s) {
+    document.querySelectorAll('#' + tableId + ' th[data-sort]').forEach(function (th) {
+      th.classList.remove('sorted-asc', 'sorted-desc');
+      if (th.getAttribute('data-sort') === s.key) th.classList.add(s.dir > 0 ? 'sorted-asc' : 'sorted-desc');
+    });
+  }
+  function rowStyle(status) { const c = statusColor(status); return ' class="st-row" style="--row-bg:' + c.bg + ';--row-fg:' + c.fg + '"'; }
+  function partyText(type, name, code) {
+    if (type === '指定なし') return '<span class="muted">指定なし</span>';
+    if (!type) return '<span class="muted">-</span>';
+    return escapeHtml(name || '') + (type === '手入力' ? ' <span class="cell-note">（手入力）</span>' : '');
+  }
+  function partyTwo(type, name, code, branch) {
+    const top = type === '指定なし' ? '<span class="muted">指定なし</span>' : escapeHtml(name || '-') + (type === '手入力' ? ' <span class="cell-note">（手入力）</span>' : '');
+    const sub = code ? '<span class="sub">' + escapeHtml(code + (branch ? '-' + branch : '')) + '</span>' : '<span class="warn-badge amber">コード未設定</span>';
+    return '<div class="cell-two">' + top + sub + '</div>';
+  }
+  function actionBtn(label, cls, onclick, check) {
+    const dis = check && !check.ok;
+    return '<button type="button" class="' + cls + ' btn-sm" ' + (dis ? 'disabled title="' + escapeHtml(check.reason) + '"' : 'onclick="' + onclick + '"') + '>' + escapeHtml(label) + '</button>';
+  }
+  function findRow(tab, id) { return (APP.lists[tab] || []).filter(function (r) { return r.requestId === id; })[0]; }
+
+  // 入力データ一覧
+  function toggleQuick(q) {
+    APP.listFilter.quick = APP.listFilter.quick === q ? '' : q;
+    document.querySelectorAll('[data-quick]').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-quick') === APP.listFilter.quick); });
+    renderRequestList();
+  }
+  function toggleStatusFilter(st) {
+    const a = APP.listFilter.statuses;
+    const i = a.indexOf(st);
+    if (i >= 0) a.splice(i, 1); else a.push(st);
+    document.querySelectorAll('[data-status]').forEach(function (b) { b.classList.toggle('active', a.indexOf(b.getAttribute('data-status')) >= 0); });
+    renderRequestList();
+  }
+  function resetListFilters() {
+    APP.listFilter = { statuses: [], quick: '' };
+    document.querySelectorAll('[data-quick],[data-status]').forEach(function (b) { b.classList.remove('active'); });
+    ['lf-keyword', 'lf-dept', 'lf-category', 'lf-applicant', 'lf-approver', 'lf-supplier', 'lf-from', 'lf-to'].forEach(function (id) { $(id).value = ''; });
+    renderRequestList();
+  }
+  function buildListPersonOptions() {
+    const rows = APP.lists.ALL || [];
+    const uniq = function (key, nameKey) {
+      const m = {};
+      rows.forEach(function (r) { if (r[key]) m[r[key]] = r[nameKey] || r[key]; });
+      return Object.keys(m).map(function (k) { return { id: k, name: m[k] }; }).sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+    };
+    const keepA = $('lf-applicant').value, keepP = $('lf-approver').value;
+    $('lf-applicant').innerHTML = options(uniq('applicantId', 'applicantName'), 'id', function (x) { return x.name; }, '入力者: すべて');
+    $('lf-approver').innerHTML = options(uniq('approverId', 'approverName'), 'id', function (x) { return x.name; }, '承認者: すべて');
+    $('lf-applicant').value = keepA; $('lf-approver').value = keepP;
+  }
+  function renderRequestList() {
+    const all = APP.lists.ALL;
+    if (!all) return;
+    const f = APP.listFilter;
+    const kw = normalizeSearch($('lf-keyword').value);
+    const sup = normalizeSearch($('lf-supplier').value);
+    const dept = $('lf-dept').value, cat = $('lf-category').value, ap = $('lf-applicant').value, pr = $('lf-approver').value;
+    const from = dateToSlash($('lf-from').value), to = dateToSlash($('lf-to').value);
+    const rows = sortRows(all.filter(function (r) {
+      if (f.statuses.length && f.statuses.indexOf(r.status) < 0) return false;
+      if (f.quick === 'mine' && r.applicantId !== APP.operatorId) return false;
+      if (f.quick === 'toApprove' && !(r.approverId === APP.operatorId && r.status === '承認依頼中')) return false;
+      if (dept && r.deptCode !== dept) return false;
+      if (cat && r.categoryCode !== cat) return false;
+      if (ap && r.applicantId !== ap) return false;
+      if (pr && r.approverId !== pr) return false;
+      if (sup && normalizeSearch(r.supplierName).indexOf(sup) < 0) return false;
+      if (kw && normalizeSearch(r.itemName).indexOf(kw) < 0) return false;
+      if (from && (!r.submittedDate || r.submittedDate < from)) return false;
+      if (to && (!r.submittedDate || r.submittedDate > to)) return false;
+      return true;
+    }), APP.sort.list);
+    markSortHeader('list-table', APP.sort.list);
+    $('list-count').textContent = all.length + '件中 ' + rows.length + '件を表示';
+    if (!rows.length) { $('list-body').innerHTML = '<tr><td colspan="15" class="table-empty">該当する届出がありません</td></tr>'; return; }
+    $('list-body').innerHTML = rows.map(function (r) {
+      const id = escapeHtml(r.requestId);
+      const editCheck = canEdit(r) ? { ok: true } : { ok: false, reason: 'この届出は修正できません' };
+      return '<tr' + rowStyle(r.status) + '>' +
+        '<td class="cell-id">' + id + '</td><td>' + statusBadge(r.status) + '</td>' +
+        '<td class="nowrap">' + escapeHtml(r.submittedDate || '-') + '</td><td>' + escapeHtml(r.deptName) + '</td><td>' + escapeHtml(r.categoryName) + '</td>' +
+        '<td class="nowrap">' + escapeHtml(r.applicantName) + '</td><td class="nowrap">' + escapeHtml(r.approverName) + '</td>' +
+        '<td class="cell-wrap">' + partyText(r.supplierType, r.supplierName) + '</td><td class="cell-wrap">' + partyText(r.deliveryType, r.deliveryName) + '</td>' +
+        '<td class="cell-wrap">' + escapeHtml(r.itemName) + '</td><td class="nowrap">' + escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + '</td>' +
+        '<td class="nowrap">' + escapeHtml(r.deliveryDate || '-') + '</td><td class="nowrap">' + (r.attCount ? '📎×' + r.attCount : '-') + '</td>' +
+        '<td class="nowrap small">' + escapeHtml(r.updatedAt) + '</td>' +
+        '<td class="action-cell"><div class="action-buttons">' +
+        actionBtn('詳細', 'btn-edit', "openDetail('" + id + "')") +
+        actionBtn('修正', 'btn-edit', "openEdit('" + id + "')", editCheck) +
+        actionBtn('承認依頼', 'btn-secondary', "listAction('REQUEST','" + id + "')", canDo('REQUEST', r)) +
+        actionBtn('承認依頼取消', 'btn-danger-outline', "listAction('CANCEL_REQUEST','" + id + "')", canDo('CANCEL_REQUEST', r)) +
+        actionBtn('承認', 'btn-primary', "listAction('APPROVE','" + id + "')", canDo('APPROVE', r)) +
+        actionBtn('差し戻し', 'btn-danger-outline', "listAction('REJECT','" + id + "')", canDo('REJECT', r)) +
+        actionBtn('削除', 'btn-danger-outline', "listAction('DELETE','" + id + "')", canDo('DELETE', r)) +
+        '</div></td></tr>';
+    }).join('');
+  }
+  function listAction(action, id) {
+    const r = findRow('ALL', id) || findRow('APPROVED', id) || findRow('REFLECTED', id);
+    if (r) doStatusAction(action, r);
+  }
+
+  // 承認済一覧
+  function resetApprovedFilters() { ['af-dept', 'af-supplier', 'af-from', 'af-to', 'af-csv'].forEach(function (id) { $(id).value = ''; }); renderApprovedList(); }
+  function resetReflectedFilters() { ['rf-dept', 'rf-supplier', 'rf-from', 'rf-to'].forEach(function (id) { $(id).value = ''; }); renderReflectedList(); }
+
+  function materialCell(r) {
+    if (r.materialFixed && r.materialCode) return '<div class="cell-two"><span class="mono">' + escapeHtml(r.materialCode) + '</span><span class="cell-note">' + escapeHtml(r.materialName) + '</span></div>';
+    if (r.materialFixed) return '<span class="warn-badge gray">資材なし（確定）</span>';
+    return '<div class="cell-two">' + (r.materialCode ? '<span class="cell-note">候補: <span class="mono">' + escapeHtml(r.materialCode) + '</span> ' + escapeHtml(r.materialName) + '</span>' : '<span class="cell-note">候補なし</span>') +
+      '<span class="warn-badge amber">資材未確定</span></div>';
+  }
+  function csvCell(r) {
+    if (r.warnings && r.warnings.needReexport) return '<div class="cell-two"><span class="warn-badge red">要再出力</span><span class="cell-note">前回 ' + escapeHtml(r.csvExportedAt) + '（' + r.csvExportCount + '回）</span></div>';
+    if (r.csvExported) return '<div class="cell-two"><span class="small">' + escapeHtml(r.csvExportedAt) + '</span><span class="cell-note">' + r.csvExportCount + '回</span></div>';
+    return '<span class="muted">未出力</span>';
+  }
+  function dueCell(r) { return '<span class="nowrap">' + escapeHtml(r.dueDate || '-') + '</span>' + (r.dueFilled ? '<br><span class="cell-note">（補完）</span>' : ''); }
+
+  function filterByCommon(rows, prefix, dateKey) {
+    const dept = $(prefix + '-dept').value;
+    const sup = normalizeSearch($(prefix + '-supplier').value);
+    const from = dateToSlash($(prefix + '-from').value), to = dateToSlash($(prefix + '-to').value);
+    return rows.filter(function (r) {
+      const d = String(r[dateKey] || '').substr(0, 10);
+      if (dept && r.deptCode !== dept) return false;
+      if (sup && normalizeSearch(r.supplierName + ' ' + r.supplierCode).indexOf(sup) < 0) return false;
+      if (from && (!d || d < from)) return false;
+      if (to && (!d || d > to)) return false;
+      return true;
+    });
+  }
+
+  function renderApprovedList() {
+    const all = APP.lists.APPROVED;
+    if (!all) return;
+    const csv = $('af-csv').value;
+    const rows = sortRows(filterByCommon(all, 'af', 'submittedDate').filter(function (r) {
+      if (csv === 'done' && !r.csvExported) return false;
+      if (csv === 'not' && r.csvExported) return false;
+      return true;
+    }), APP.sort.approved);
+    pruneSelection('approved', all);
+    markSortHeader('approved-table', APP.sort.approved);
+    $('approved-count').textContent = '（' + all.length + '件中 ' + rows.length + '件を表示）';
+    const privileged = isAdmin() || isAccounting();
+    $('btn-export-approved').disabled = !privileged;
+    $('btn-mark-reflected').disabled = !privileged;
+    $('btn-export-approved').title = privileged ? '' : '経理担当・管理者だけが行えます';
+    $('btn-mark-reflected').title = privileged ? '' : '経理担当・管理者だけが行えます';
+    if (!rows.length) { $('approved-body').innerHTML = '<tr><td colspan="14" class="table-empty">承認済の届出はありません</td></tr>'; updateSelectedCount('approved'); return; }
+    $('approved-body').innerHTML = rows.map(function (r) {
+      const id = escapeHtml(r.requestId);
+      const sel = APP.selected.approved.has(r.requestId);
+      return '<tr' + rowStyle(r.status) + (sel ? ' data-selected="1"' : '') + '>' +
+        '<td class="checkbox-cell"><input type="checkbox" ' + (sel ? 'checked ' : '') + 'onchange="toggleSelect(\'approved\',\'' + id + '\',this.checked)"></td>' +
+        '<td class="cell-id">' + id + '</td><td class="nowrap">' + escapeHtml(r.submittedDate) + '</td><td>' + escapeHtml(r.deptName) + '</td>' +
+        '<td class="cell-wrap">' + partyTwo(r.supplierType, r.supplierName, r.supplierCode, r.supplierBranch) + '</td>' +
+        '<td class="cell-wrap">' + partyTwo(r.deliveryType, r.deliveryName, r.deliveryCode, r.deliveryBranch) + '</td>' +
+        '<td class="cell-wrap">' + escapeHtml(r.itemName) + '</td><td>' + escapeHtml(r.modelNo || '-') + '</td>' +
+        '<td class="cell-wrap">' + materialCell(r) + '</td><td>' + escapeHtml(r.materialFixed && r.materialCode ? r.packQty : '-') + '</td>' +
+        '<td class="nowrap">' + escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + '</td><td>' + dueCell(r) + '</td><td>' + csvCell(r) + '</td>' +
+        '<td class="action-cell"><div class="action-buttons">' +
+        actionBtn('資材', 'btn-edit', "openMaterialDialog('" + id + "')", canDo('FIX_MATERIAL', r)) +
+        actionBtn('コード', 'btn-edit', "openCodeDialog('" + id + "')", canDo('FILL_CODE', r)) +
+        actionBtn('詳細', 'btn-secondary', "openDetail('" + id + "')") +
+        '</div></td></tr>';
+    }).join('');
+    updateSelectedCount('approved');
+  }
+
+  function renderReflectedList() {
+    const all = APP.lists.REFLECTED;
+    if (!all) return;
+    const rows = sortRows(filterByCommon(all, 'rf', 'reflectedAt'), APP.sort.reflected);
+    pruneSelection('reflected', all);
+    markSortHeader('reflected-table', APP.sort.reflected);
+    $('reflected-count').textContent = '（' + all.length + '件中 ' + rows.length + '件を表示）';
+    const privileged = isAdmin() || isAccounting();
+    $('btn-export-reflected').disabled = !privileged;
+    $('btn-export-reflected').title = privileged ? '' : '経理担当・管理者だけが行えます';
+    if (!rows.length) { $('reflected-body').innerHTML = '<tr><td colspan="14" class="table-empty">システム反映済の届出はありません</td></tr>'; updateSelectedCount('reflected'); return; }
+    $('reflected-body').innerHTML = rows.map(function (r) {
+      const id = escapeHtml(r.requestId);
+      const sel = APP.selected.reflected.has(r.requestId);
+      return '<tr' + rowStyle(r.status) + '>' +
+        '<td class="checkbox-cell"><input type="checkbox" ' + (sel ? 'checked ' : '') + 'onchange="toggleSelect(\'reflected\',\'' + id + '\',this.checked)"></td>' +
+        '<td class="cell-id">' + id + '</td><td class="nowrap">' + escapeHtml(r.submittedDate) + '</td><td>' + escapeHtml(r.deptName) + '</td>' +
+        '<td class="cell-wrap">' + partyTwo(r.supplierType, r.supplierName, r.supplierCode, r.supplierBranch) + '</td>' +
+        '<td class="cell-wrap">' + partyTwo(r.deliveryType, r.deliveryName, r.deliveryCode, r.deliveryBranch) + '</td>' +
+        '<td class="cell-wrap">' + escapeHtml(r.itemName) + '</td><td class="cell-wrap">' + materialCell(r) + '</td>' +
+        '<td class="nowrap">' + escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + '</td><td>' + dueCell(r) + '</td><td>' + csvCell(r) + '</td>' +
+        '<td class="nowrap small">' + escapeHtml(r.reflectedAt) + '</td><td class="nowrap">' + escapeHtml(r.reflectedByName) + '</td>' +
+        '<td class="action-cell"><div class="action-buttons">' +
+        actionBtn('承認済に戻す', 'btn-danger-outline', "listAction('REVERT_REFLECTED','" + id + "')", canDo('REVERT_REFLECTED', r)) +
+        actionBtn('詳細', 'btn-secondary', "openDetail('" + id + "')") +
+        '</div></td></tr>';
+    }).join('');
+    updateSelectedCount('reflected');
+  }
+
+  function pruneSelection(kind, rows) {
+    const ids = rows.map(function (r) { return r.requestId; });
+    Array.from(APP.selected[kind]).forEach(function (id) { if (ids.indexOf(id) < 0) APP.selected[kind].delete(id); });
+  }
+  function toggleSelect(kind, id, on) {
+    if (on) APP.selected[kind].add(id); else APP.selected[kind].delete(id);
+    updateSelectedCount(kind);
+  }
+  function toggleSelectAll(kind, on) {
+    document.querySelectorAll('#' + kind + '-body input[type="checkbox"]').forEach(function (cb) {
+      cb.checked = on;
+      const m = cb.getAttribute('onchange').match(/'([^']+)','([^']+)'/);
+      if (m) { if (on) APP.selected[kind].add(m[2]); else APP.selected[kind].delete(m[2]); }
+    });
+    updateSelectedCount(kind);
+  }
+  function updateSelectedCount(kind) {
+    $(kind + '-selected-count').textContent = APP.selected[kind].size;
+    const boxes = document.querySelectorAll('#' + kind + '-body input[type="checkbox"]');
+    $(kind + '-check-all').checked = boxes.length > 0 && Array.from(boxes).every(function (b) { return b.checked; });
+  }
+
+  async function exportSelected(kind) {
+    const tab = kind === 'approved' ? 'APPROVED' : 'REFLECTED';
+    const rows = (APP.lists[tab] || []).filter(function (r) { return APP.selected[kind].has(r.requestId); });
+    if (!rows.length) { showToast('出力する届出を選択してください', 'warning'); return; }
+    const noCode = rows.filter(function (r) { return r.warnings.noCode; }).length;
+    const unfixed = rows.filter(function (r) { return r.warnings.materialUnfixed; }).length;
+    let msg = '選択した ' + rows.length + ' 件をCSVに出力します。';
+    if (noCode || unfixed) msg += '\nうち コード未設定 ' + noCode + ' 件、資材未確定 ' + unfixed + ' 件は、該当する列が空白になります。';
+    if (!await showCustomConfirm(kind === 'approved' ? 'CSV出力' : 'CSV再出力', msg, { okText: '出力する' })) return;
+    await run('CSVを作成しています...', async function () {
+      const out = await api('exportCsv', rows.map(function (r) { return { requestId: r.requestId, version: r.version }; }));
+      downloadBase64(out.fileName, out.mimeType, out.base64);
+      showToast(out.count + '件をCSVに出力しました（' + out.fileName + '）', 'success');
+      invalidateLists();
+      await loadList(tab);
+    });
+  }
+
+  async function markSelectedReflected() {
+    const rows = (APP.lists.APPROVED || []).filter(function (r) { return APP.selected.approved.has(r.requestId); });
+    if (!rows.length) { showToast('反映済にする届出を選択してください', 'warning'); return; }
+    const notExported = rows.filter(function (r) { return !r.csvExported; });
+    if (notExported.length) { showToast('CSV出力済でない届出が ' + notExported.length + ' 件あります。先にCSVを出力してください', 'error'); return; }
+    if (!await showCustomConfirm('反映済にする', '選択した ' + rows.length + ' 件を「システム反映済」にします。販売管理システムへの取込は済んでいますか？', { okText: '反映済にする' })) return;
+    await run('処理しています...', async function () {
+      const out = await api('markReflected', rows.map(function (r) { return { requestId: r.requestId, version: r.version }; }));
+      showToast(out.results.length + '件を反映済にしました', 'success');
+      APP.selected.approved.clear();
+      invalidateLists();
+      await loadList('APPROVED');
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // 10. 詳細モーダル（plan/05 §6.1）
+  // -------------------------------------------------------------------------
+  async function openDetail(requestId) {
+    await run('読み込み中です...', async function () {
+      const d = await api('getRequestDetail', requestId);
+      const r = d.request;
+      const n = function (id) { return id ? (d.names[id] || id) : ''; };
+      const row = function (label, value) { return '<tr><th>' + escapeHtml(label) + '</th><td>' + (value === '' || value == null ? '<span class="muted">-</span>' : value) + '</td></tr>'; };
+      const t = function (v) { return escapeHtml(v == null ? '' : v); };
+      const party = function (type, name, code, branch) {
+        if (!type) return '';
+        if (type === '指定なし') return '指定なし' + (code ? '（補完コード ' + t(code + (branch ? '-' + branch : '')) + '）' : '');
+        return t(name) + '（' + t(type) + '）' + (code ? ' ／ <span class="mono">' + t(code + (branch ? '-' + branch : '')) + '</span>' : '');
+      };
+      let html = '<div class="target-box"><span class="cell-id">' + t(r.requestId) + '</span>' + statusBadge(r.status) +
+        (r.submittedDate ? '<span class="label">提出日</span>' + t(r.submittedDate) : '') + '</div>';
+      if (r.status === '差し戻し' && r.rejectReason) html += '<div class="alert-notice danger"><strong>差し戻し理由:</strong> ' + t(r.rejectReason) + '</div>';
+      html += '<div class="detail-grid"><div><div class="detail-section-title">届出の内容</div><table class="detail-table">' +
+        row('部門', t(r.deptName)) + row('種別', t(r.categoryName)) + row('入力者', t(r.applicantName)) + row('承認者', t(r.approverName)) +
+        row('発注先', party(r.supplierType, r.supplierName, r.supplierCode, r.supplierBranch)) +
+        row('納入先', party(r.deliveryType, r.deliveryName, r.deliveryCode, r.deliveryBranch)) +
+        row('購入物品名', t(r.itemName)) + row('型番', t(r.modelNo)) + row('数量', t(r.quantity) + ' ' + t(r.unitNote)) +
+        row('納品日', t(r.deliveryDate)) + row('理由', t(r.reason)) + '</table></div>';
+      const att = d.attachments.length ? d.attachments.map(function (a) {
+        return '<div class="attach-current">📎 ' + t(a.fileName) + ' <button type="button" class="btn-edit btn-sm" onclick="viewAttachment(\'' + t(r.requestId) + '\',' + a.slot + ')">表示</button></div>';
+      }).join('') : '';
+      html += '<div><div class="detail-section-title">資材・CSV・反映</div><table class="detail-table">' +
+        row('資材コード', r.materialCode ? '<span class="mono">' + t(r.materialCode) + '</span> ' + t(r.materialName) : (r.materialFixed ? '資材なし（確定）' : '')) +
+        row('資材の確定', r.materialFixed ? '確定（' + t(n(r.materialFixedBy)) + ' ' + t(r.materialFixedAt) + '）' : (r.status === '承認済' || r.status === 'システム反映済' ? '<span class="warn-badge amber">未確定</span>' : '')) +
+        row('入数', t(r.materialFixed ? r.packQty : '')) + row('納期（CSV）', t(d.dueDate)) +
+        row('CSV出力', r.csvExportCount ? t(r.csvExportedAt) + '（' + r.csvExportCount + '回・' + t(n(r.csvExportedBy)) + '）' + (r.csvExported ? '' : ' <span class="warn-badge red">要再出力</span>') : '') +
+        row('反映済', r.reflectedAt ? t(r.reflectedAt) + '（' + t(n(r.reflectedBy)) + '）' : '') +
+        row('承認', r.approvedAt ? t(r.approvedAt) + '（' + t(n(r.approvedBy)) + '）' : '') +
+        row('添付', att) + row('作成', t(r.createdAt) + ' ' + t(n(r.createdBy))) + row('更新', t(r.updatedAt) + ' ' + t(n(r.updatedBy))) +
+        '</table></div></div>';
+      html += '<div class="detail-section-title">ステータスの履歴</div><div class="table-container"><table class="data-table"><thead><tr><th>日時</th><th>操作</th><th>操作者</th><th>変更前 → 変更後</th><th>詳細</th></tr></thead><tbody>' +
+        (d.logs.length ? d.logs.map(function (l) {
+          let detail = '';
+          try { const o = l.detail ? JSON.parse(l.detail) : null; if (o) detail = o.reason ? '理由: ' + o.reason : (o.fileName ? o.fileName : (o.changed ? '変更: ' + o.changed.join(', ') : (o.code ? o.code : ''))); } catch (e) { detail = l.detail; }
+          return '<tr><td class="nowrap small">' + t(l.loggedAt) + '</td><td class="nowrap">' + t(l.action) + '</td><td class="nowrap">' + t(l.operatorName) + (l.role ? ' <span class="cell-note">（' + t(l.role) + '）</span>' : '') + '</td>' +
+            '<td class="nowrap">' + t(l.statusBefore || '-') + ' → ' + t(l.statusAfter || '-') + '</td><td class="small">' + t(detail) + '</td></tr>';
+        }).join('') : '<tr><td colspan="5" class="table-empty">履歴がありません</td></tr>') + '</tbody></table></div>';
+      $('detail-title').textContent = '届出の詳細';
+      $('detail-body').innerHTML = html;
+      const eb = $('detail-edit-btn');
+      const ok = canEdit(r);
+      eb.disabled = !ok;
+      eb.title = ok ? '' : 'この届出は修正できません';
+      eb.onclick = function () { closeModal('detail-modal'); openEdit(r.requestId); };
+      $('detail-modal').style.display = 'flex';
+    });
+  }
+  function closeModal(id) { $(id).style.display = 'none'; }
+
+  // -------------------------------------------------------------------------
+  // 11. 資材の確定・コード補完（plan/05 §6.3〜§6.4）
+  // -------------------------------------------------------------------------
+  async function openMaterialDialog(id) {
+    const r = findRow('APPROVED', id);
+    if (!r) return;
+    await run('読み込み中です...', async function () {
+      const d = await api('getMaterialCandidates', id);
+      APP.material = { row: r, version: d.version, candidates: d.candidates, results: [] };
+      $('material-target').innerHTML = '<span class="cell-id">' + escapeHtml(r.requestId) + '</span><span><span class="label">購入物品名</span> ' + escapeHtml(r.itemName) + '</span>' +
+        '<span><span class="label">種別</span> ' + escapeHtml(r.categoryName) + '</span><span><span class="label">部門</span> ' + escapeHtml(r.deptName) + '</span>' +
+        '<span><span class="label">発注先</span> ' + escapeHtml(r.supplierName || r.supplierType || '-') + '</span>';
+      $('mat-keyword').value = '';
+      $('mat-category').value = r.categoryCode || '';
+      $('mat-dept').value = '';
+      $('material-search-results').innerHTML = '';
+      renderMaterialCandidates(d.current);
+      $('material-modal').style.display = 'flex';
+    });
+  }
+  function materialChoice(prefix, i, m, rankLabel, checked) {
+    return '<label class="choice-item"><input type="radio" name="mat-choice" value="' + prefix + ':' + i + '"' + (checked ? ' checked' : '') + '><span>' +
+      (rankLabel ? '<span class="rank">' + rankLabel + '</span>' : '') + '<span class="mono">' + escapeHtml(m.code + (m.branch ? '-' + m.branch : '') + (m.subBranch ? '-' + m.subBranch : '')) + '</span> ' + escapeHtml(m.name) +
+      '<br><small class="muted">入数 ' + escapeHtml(m.packQty) + (m.typeName ? '・' + escapeHtml(m.typeName) : '') + (m.deptName ? '・' + escapeHtml(m.deptName) : (m.deptCode ? '・部署 ' + escapeHtml(m.deptCode) : '')) + '</small></span></label>';
+  }
+  function renderMaterialCandidates(current) {
+    const m = APP.material;
+    const curKey = current && current.code ? current.code + '|' + (current.branch || '') + '|' + (current.subBranch || '') : '';
+    $('material-candidates').innerHTML = m.candidates.length ? m.candidates.map(function (c, i) {
+      const checked = curKey && curKey === c.code + '|' + (c.branch || '') + '|' + (c.subBranch || '');
+      return materialChoice('C', i, c, '順位' + c.rank, checked);
+    }).join('') : '<div class="muted small">候補がありません。資材マスタを検索するか、「資材なしで確定」を選んでください。</div>';
+    const none = document.querySelector('input[name="mat-choice"][value="NONE"]');
+    none.checked = !!(current && current.fixed && !current.code);
+  }
+  async function recalcMaterial() {
+    const m = APP.material;
+    await run('再計算しています...', async function () {
+      const d = await api('recalcMaterialCandidates', m.row.requestId, m.version);
+      m.version = d.version;
+      m.candidates = d.candidates;
+      renderMaterialCandidates(null);
+      invalidateLists();
+      showToast('候補を再計算しました（' + d.candidates.length + '件）', 'success');
+    });
+  }
+  async function searchMaterialClick() {
+    const m = APP.material;
+    await run('検索しています...', async function () {
+      m.results = await api('searchMaterials', { keyword: $('mat-keyword').value, categoryCode: $('mat-category').value, deptCode: $('mat-dept').value });
+      $('material-search-results').innerHTML = m.results.length ? m.results.map(function (x, i) { return materialChoice('S', i, x, '', false); }).join('') :
+        '<div class="muted small">該当する資材がありません（最大50件まで表示）</div>';
+    });
+  }
+  async function submitMaterial() {
+    const m = APP.material;
+    const sel = document.querySelector('input[name="mat-choice"]:checked');
+    if (!sel) { showToast('資材を選んでください', 'warning'); return; }
+    let material = null;
+    if (sel.value !== 'NONE') {
+      const p = sel.value.split(':');
+      const src = p[0] === 'C' ? m.candidates[Number(p[1])] : m.results[Number(p[1])];
+      material = { code: src.code, branch: src.branch || '', subBranch: src.subBranch || '' };
+    }
+    await run('確定しています...', async function () {
+      await api('fixMaterial', m.row.requestId, m.version, material);
+      closeModal('material-modal');
+      showToast('資材を確定しました（' + m.row.requestId + '）', 'success');
+      invalidateLists();
+      await loadList('APPROVED');
+    });
+  }
+
+  let codeSearchTimer = null;
+  function setupCodeDialogCombo() {
+    const input = $('code-supplier-search');
+    input.addEventListener('input', function () {
+      clearTimeout(codeSearchTimer);
+      codeSearchTimer = setTimeout(async function () {
+        const res = await callServer_('searchSuppliers', [ctx(), input.value, true]);
+        const list = $('code-supplier-list');
+        if (!res.ok) { list.innerHTML = '<div class="combo-empty">' + escapeHtml(res.error.message) + '</div>'; list.classList.add('open'); return; }
+        APP.code.results = res.data;
+        list.innerHTML = res.data.length ? res.data.map(function (x, i) {
+          return '<div class="combo-item" data-i="' + i + '">' + escapeHtml(x.name) + (x.visible ? '' : ' <span class="cell-note">（非表示）</span>') + '<span class="combo-code">' + escapeHtml(x.code + (x.branch ? '-' + x.branch : '')) + '</span></div>';
+        }).join('') : '<div class="combo-empty">該当する取引先がありません</div>';
+        list.querySelectorAll('.combo-item').forEach(function (el) {
+          el.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            const x = APP.code.results[Number(el.getAttribute('data-i'))];
+            APP.code.supplier = { code: x.code, branch: x.branch || '' };
+            input.value = x.name;
+            $('code-supplier-selected').innerHTML = '設定するコード: <strong>' + escapeHtml(x.code + (x.branch ? '-' + x.branch : '')) + '</strong>';
+            list.classList.remove('open');
+          });
+        });
+        list.classList.add('open');
+      }, 300);
+    });
+    document.addEventListener('click', function (e) { if (!input.closest('.combo').contains(e.target)) $('code-supplier-list').classList.remove('open'); });
+  }
+  function openCodeDialog(id) {
+    const r = findRow('APPROVED', id);
+    if (!r) return;
+    APP.code = { row: r, supplier: null, results: [] };
+    $('code-target').innerHTML = '<span class="cell-id">' + escapeHtml(r.requestId) + '</span><span>' + escapeHtml(r.itemName) + '</span>';
+    const cur = function (type, name, code, branch) {
+      return '入力時: ' + escapeHtml(type || '-') + (name ? '「' + escapeHtml(name) + '」' : '') + ' ／ 現在のコード: ' + (code ? '<span class="mono">' + escapeHtml(code + (branch ? '-' + branch : '')) + '</span>' : '未設定');
+    };
+    $('code-supplier-current').innerHTML = cur(r.supplierType, r.supplierName, r.supplierCode, r.supplierBranch);
+    $('code-delivery-current').innerHTML = cur(r.deliveryType, r.deliveryName, r.deliveryCode, r.deliveryBranch);
+    $('code-supplier-search').value = '';
+    $('code-supplier-selected').innerHTML = '空欄のままなら変更しません';
+    $('code-delivery').value = '__KEEP__';
+    $('code-modal').style.display = 'flex';
+  }
+  async function submitCodes() {
+    const c = APP.code;
+    const dv = $('code-delivery').value;
+    let delivery = null;
+    if (dv === '') delivery = { code: '', branch: '' };
+    else if (dv !== '__KEEP__') { const d = APP.init.deliveries[Number(dv)]; delivery = { code: d.code, branch: d.branch || '' }; }
+    if (!c.supplier && !delivery) { showToast('変更する内容がありません', 'warning'); return; }
+    await run('保存しています...', async function () {
+      await api('fillCodes', c.row.requestId, c.row.version, { supplier: c.supplier, delivery: delivery });
+      closeModal('code-modal');
+      showToast('コードを補完しました（' + c.row.requestId + '）', 'success');
+      invalidateLists();
+      await loadList('APPROVED');
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // 12. マスタ管理（plan/05 §7）
+  // -------------------------------------------------------------------------
+  function showAdminLocked() {
+    $('admin-auth-box').style.display = '';
+    $('admin-content').style.display = 'none';
+  }
+  async function openAdmin(askPin) {
+    if (!isAdmin()) { showAdminLocked(); return; }
+    if (!APP.adminReady && !askPin && !APP.auth) { showAdminLocked(); return; }
+    await run('確認しています...', async function () {
+      await api('adminPing');
+      APP.adminReady = true;
+      $('admin-auth-box').style.display = 'none';
+      $('admin-content').style.display = '';
+      await loadAdminSettings();
+    });
+    if (!APP.adminReady) showAdminLocked();
+  }
+  function switchAdminSub(name) {
+    document.querySelectorAll('.admin-subtab-btn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-sub') === name); });
+    document.querySelectorAll('.admin-subview').forEach(function (v) { v.classList.toggle('active', v.id === 'admin-sub-' + name); });
+  }
+  async function adminImport(target) {
+    const labels = { ALL: 'すべてのマスタ', MATERIALS: '資材マスタ', SUPPLIERS: '発注先マスタ', EMPLOYEES: '社員マスタ' };
+    if (!await showCustomConfirm('マスタ取込', labels[target] + 'を取り込みます。資材マスタは全件を入れ替えます。よろしいですか？', { okText: '取り込む' })) return;
+    await run('取り込んでいます（数十秒かかることがあります）...', async function () {
+      const d = await api('adminImportMasters', target);
+      $('admin-import-result').innerHTML = '<table class="data-table"><thead><tr><th>対象</th><th>ファイル</th><th>件数</th><th>追加</th><th>更新</th><th>無効化</th></tr></thead><tbody>' +
+        d.results.map(function (r) { return '<tr><td>' + escapeHtml(r.target) + '</td><td>' + escapeHtml(r.fileName) + '</td><td>' + r.rows + '</td><td>' + r.inserted + '</td><td>' + r.updated + '</td><td>' + r.disabled + '</td></tr>'; }).join('') + '</tbody></table>';
+      showToast('マスタを取り込みました', 'success');
+      await reloadInitData();
+    });
+  }
+  async function adminIssuePinClick() {
+    const id = $('pin-employee').value;
+    if (!id) { showToast('社員を選択してください', 'warning'); return; }
+    if (!await showCustomConfirm('暗証番号の発行', employeeName(id) + ' さんの暗証番号を発行します。以前の暗証番号は使えなくなります。', { okText: '発行する' })) return;
+    await run('発行しています...', async function () {
+      const d = await api('adminIssuePin', id);
+      const box = $('pin-result');
+      box.style.display = '';
+      box.innerHTML = '<div>' + escapeHtml(d.name) + ' さんの暗証番号</div><div class="pin-value">' + escapeHtml(d.pin) + '</div><div class="small muted">本人に伝えてください。この画面を閉じると再表示できません。</div>';
+    });
+  }
+  async function loadAdminSettings() {
+    const d = await api('adminGetSettings');
+    $('sheet-link').href = d.spreadsheetUrl;
+    $('admin-settings').innerHTML = '<table class="data-table"><thead><tr><th>キー</th><th>値</th><th>説明</th></tr></thead><tbody>' +
+      d.settings.map(function (s) { return '<tr><td class="mono small">' + escapeHtml(s.key) + '</td><td class="small" style="word-break:break-all;">' + escapeHtml(s.value) + '</td><td class="small muted">' + escapeHtml(s.description) + '</td></tr>'; }).join('') + '</tbody></table>';
+  }
+
+  // -------------------------------------------------------------------------
+  // 13. ダウンロード・プレビュー
+  // -------------------------------------------------------------------------
+  function base64ToBlob(base64, mimeType) {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+  }
+  function downloadBase64(fileName, mimeType, base64) {
+    const url = URL.createObjectURL(base64ToBlob(base64, mimeType));
+    const a = document.createElement('a');
+    a.href = url; a.download = fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+  }
+  let previewUrl = null;
+  function openPreview(fileName, mimeType, base64) {
+    const blob = base64ToBlob(base64, mimeType);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(blob);
+    $('preview-title').textContent = fileName;
+    const body = $('preview-body');
+    if (/^image\//.test(mimeType)) body.innerHTML = '<img src="' + previewUrl + '" alt="">';
+    else if (mimeType === 'application/pdf') body.innerHTML = '<iframe src="' + previewUrl + '"></iframe>';
+    else body.innerHTML = '<div class="muted">このファイルはプレビューできません。ダウンロードしてください。</div>';
+    $('preview-download').onclick = function () { downloadBase64(fileName, mimeType, base64); };
+    $('preview-modal').style.display = 'flex';
+  }
+  function closePreview() { $('preview-modal').style.display = 'none'; }
+
+  // -------------------------------------------------------------------------
+  // 14. 共通部品（参考アプリと同じ名前と引数。plan/05 §0.4）
+  // -------------------------------------------------------------------------
+  function showCustomConfirm(title, message, options) {
+    options = options || {};
+    return new Promise(function (resolve) {
+      const modal = $('custom-confirm-modal');
+      const btnOk = $('btn-confirm-ok');
+      const btnCancel = $('btn-confirm-cancel');
+      const isDanger = typeof options === 'boolean' ? options : !!options.isDanger;
+      $('confirm-title').textContent = title || '確認';
+      if (options.isHtml) $('confirm-message').innerHTML = message || ''; else $('confirm-message').innerText = message || 'この処理を実行しますか？';
+      btnOk.textContent = options.okText || '実行する';
+      btnCancel.textContent = options.cancelText || 'キャンセル';
+      $('confirm-icon-box').classList.toggle('danger', isDanger);
+      btnOk.style.background = isDanger ? 'var(--danger)' : 'var(--primary-gradient)';
+      modal.style.display = 'flex';
+      const cleanup = function (v) {
+        modal.style.display = 'none';
+        btnOk.removeEventListener('click', onOk);
+        btnCancel.removeEventListener('click', onCancel);
+        resolve(v);
+      };
+      const onOk = function () { cleanup(true); };
+      const onCancel = function () { cleanup(false); };
+      btnOk.addEventListener('click', onOk);
+      btnCancel.addEventListener('click', onCancel);
+    });
+  }
+
+  function toggleLoading(show, message) {
+    APP.loadingDepth = Math.max(0, APP.loadingDepth + (show ? 1 : -1));
+    const overlay = $('app-loading-overlay');
+    if (message) $('loading-message').textContent = message;
+    overlay.style.display = APP.loadingDepth > 0 ? 'flex' : 'none';
+  }
+
+  function showToast(message, type) {
+    type = type || 'info';
+    const container = $('toast-container');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    const text = document.createElement('span');
+    text.textContent = message;
+    toast.appendChild(text);
+    const close = function () {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(10px)';
+      toast.style.transition = 'all 0.3s ease';
+      setTimeout(function () { toast.remove(); }, 300);
+    };
+    if (type === 'error') {
+      const btn = document.createElement('button');
+      btn.className = 'toast-close';
+      btn.textContent = '×';
+      btn.onclick = close;
+      toast.appendChild(btn);
+    } else {
+      setTimeout(close, 3500);
+    }
+    container.appendChild(toast);
+  }
+</script>
