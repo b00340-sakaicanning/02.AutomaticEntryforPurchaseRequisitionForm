@@ -124,14 +124,22 @@ function adminImportMasters(ctx, target) {
     return { results: importMasters(target, ctx.operatorId) };
   });
 }
-function adminIssuePin(ctx, employeeId) {
+/** 暗証番号の発行。pin を渡すと、その番号を設定する（空ならランダム）。指定したときは番号を返さない */
+function adminIssuePin(ctx, employeeId, pin) {
   return handle_(function () {
     const masters = getMasters();
     requirePrivileged_(ctx, ['admin'], masters);
     const emp = findEmployee_(masters, employeeId);
     if (!emp) throw AppError('VALIDATION', '社員が見つかりません');
+    const specified = pin !== undefined && pin !== null && String(pin).trim() !== '';
+    if (specified) {
+      const v = validatePin_(pin, getSetting('PIN_LENGTH'));
+      if (!v.ok) throw AppError('VALIDATION', v.message, { pin: v.message });
+      issuePin(employeeId, ctx.operatorId, v.value);
+      return { employeeId: employeeId, name: emp.name, specified: true };
+    }
     const r = issuePin(employeeId, ctx.operatorId);
-    return { employeeId: employeeId, name: emp.name, pin: r.pin };
+    return { employeeId: employeeId, name: emp.name, pin: r.pin, specified: false };
   });
 }
 function adminGetSettings(ctx) {
@@ -179,7 +187,8 @@ function buildInitData_() {
       attachmentMaxMb: s.ATTACHMENT_MAX_MB,
       attachmentAllowedExt: s.ATTACHMENT_ALLOWED_EXT,
       quantityDecimals: s.QUANTITY_DECIMALS,
-      pinSessionMinutes: s.PIN_SESSION_MINUTES
+      pinSessionMinutes: s.PIN_SESSION_MINUTES,
+      pinLength: s.PIN_LENGTH
     }
   };
 }
@@ -702,7 +711,22 @@ function generatePin_(length) {
   return digits;
 }
 
-/** 暗証番号を発行し、平文を1回だけ返す（K-13）。pinOverride は開発用のサンプルデータでだけ使う */
+/**
+ * 管理者が指定する暗証番号の形式チェック（純粋な関数。K-13）
+ * 数字だけで、桁数は PIN_LENGTH と同じ。推測しやすい番号（123456 など）も許可する。全角数字は半角に直す
+ */
+function validatePin_(pin, length) {
+  const s = toHalfWidth(pin).trim();
+  if (!s) return { ok: false, value: '', message: '暗証番号を入力してください' };
+  if (!/^\d+$/.test(s)) return { ok: false, value: s, message: '暗証番号は数字だけで入力してください' };
+  if (s.length !== Number(length)) return { ok: false, value: s, message: '暗証番号は' + length + '桁の数字で入力してください' };
+  return { ok: true, value: s, message: '' };
+}
+
+/**
+ * 暗証番号を設定し、平文を1回だけ返す（K-13）
+ * pinOverride: 管理者が指定した番号（形式チェック済みのもの）、または開発用のサンプルデータの番号。空ならランダムに作る
+ */
 function issuePin(employeeId, issuedBy, pinOverride) {
   if (!employeeId) throw AppError('VALIDATION', '社員IDを指定してください');
   return withLock(function () {
@@ -713,7 +737,7 @@ function issuePin(employeeId, issuedBy, pinOverride) {
     const found = rows.filter(function (r) { return r.employeeId === employeeId; })[0];
     if (found) writeRows_('PINS', found._row, [rec]); else appendRows_('PINS', [rec]);
     const masters = getMasters();
-    appendLog({ operatorId: issuedBy || '', operatorName: employeeName_(masters, issuedBy), role: ROLE_LABELS.admin, action: ACTIONS.ISSUE_PIN, detail: { employeeId: employeeId } });
+    appendLog({ operatorId: issuedBy || '', operatorName: employeeName_(masters, issuedBy), role: ROLE_LABELS.admin, action: ACTIONS.ISSUE_PIN, detail: { employeeId: employeeId, mode: pinOverride ? '指定' : 'ランダム' } });
     return { pin: pin };
   });
 }
@@ -2014,6 +2038,17 @@ function menuIssuePin() {
   const masters = getMasters();
   const emp = findEmployee_(masters, id);
   if (!emp) { ui.alert('社員マスタに ' + id + ' がありません'); return; }
+  const len = getSetting('PIN_LENGTH');
+  const res2 = ui.prompt('暗証番号を発行', emp.name + ' さんの暗証番号を指定する場合は、' + len + '桁の数字を入力してください。\n空欄のまま OK を押すと、ランダムに発行します。', ui.ButtonSet.OK_CANCEL);
+  if (res2.getSelectedButton() !== ui.Button.OK) return;
+  const input = String(res2.getResponseText() || '').trim();
+  if (input) {
+    const v = validatePin_(input, len);
+    if (!v.ok) { ui.alert(v.message); return; }
+    issuePin(id, Session.getEffectiveUser().getEmail(), v.value);
+    ui.alert('暗証番号を設定しました', emp.name + ' さんに、指定した暗証番号を設定しました。', ui.ButtonSet.OK);
+    return;
+  }
   const r = issuePin(id, Session.getEffectiveUser().getEmail());
   ui.alert('暗証番号を発行しました', emp.name + ' さんの暗証番号: ' + r.pin + '\n\n本人に伝えてください。この画面を閉じると再表示できません。', ui.ButtonSet.OK);
 }

@@ -85,9 +85,11 @@ function testList_() {
     ['TC-DL-03', '同じ日の連番', test_requestIdSequence, 'pure'],
     ['TC-DL-04', '1000件目以降は4桁', test_requestId1000, 'pure'],
     ['TC-CFG-01', '設定の型変換', test_parseSettings, 'pure'],
+    ['TC-AU-09', '指定する暗証番号の形式チェック', test_validatePin, 'pure'],
     ['TC-MI-01', 'マスタの件数（資材・発注先・社員・部署・種別）', test_gas_masterCounts, 'gas'],
     ['TC-MI-02', '資材コードの先頭の0', test_gas_materialLeadingZeros, 'gas'],
     ['TC-AU-01', '暗証番号の発行・認証・誤り・ロック', test_gas_pinFlow, 'gas'],
+    ['TC-AU-10', '管理者が番号を指定して設定する', test_gas_adminSpecifyPin, 'gas'],
     ['TC-FLOW', '入力→承認依頼→承認→資材確定→CSV→反映済→承認済に戻す', test_gas_workflow, 'gas'],
     ['TC-DL-05', '古いバージョンでの更新は CONFLICT', test_gas_conflict, 'gas'],
     ['TC-NT-01', '通知が無効なら送らない', test_gas_notifyDisabled, 'gas']
@@ -469,6 +471,17 @@ function test_parseSettings() {
   assertEq_(s.STATUS_COLORS['承認済'].bg, '#d1fae5', '壊れたJSONは既定値');
   assertEq_(s.QUANTITY_DECIMALS, 3);
 }
+function test_validatePin() {
+  assertEq_(validatePin_('482913', 6).ok, true, '6桁の数字');
+  assertEq_(validatePin_('111111', 6).ok, true, '推測しやすい番号も可');
+  assertEq_(validatePin_('123456', 6).ok, true, '推測しやすい番号も可');
+  assertEq_(validatePin_('４８２９１３', 6).value, '482913', '全角数字は半角に直す');
+  assertEq_(validatePin_('12345', 6).ok, false, '5桁は不可');
+  assertEq_(validatePin_('1234567', 6).ok, false, '7桁は不可');
+  assertEq_(validatePin_('12a456', 6).ok, false, '英字は不可');
+  assertEq_(validatePin_('', 6).ok, false, '空は不可');
+  assertEq_(validatePin_('1234', 4).ok, true, 'PIN_LENGTH に合わせる');
+}
 
 // ---------------------------------------------------------------------
 // gas テスト（開発環境のシートを使う。サンプルデータ投入の後に実行する）
@@ -560,6 +573,38 @@ function test_gas_pinFlow() {
     return e.enabled && !readAll('PINS').some(function (p) { return p.employeeId === e.employeeId; });
   })[0];
   if (noPin) expectError_(authenticate(noPin.employeeId, '123456'), 'AUTH_FAILED', 'TC-AU-07 未発行');
+}
+
+function test_gas_adminSpecifyPin() {
+  requireGas_();
+  const a = testActors_();
+  const ctxM = { operatorId: a.admin, token: createSession_(a.admin).token };
+  const target = a.applicant;
+  try {
+    // 指定した番号を設定でき、その番号で認証できる。番号は返さない
+    const d = call_(adminIssuePin(ctxM, target, '482913'));
+    assertEq_([d.specified, d.pin === undefined], [true, true], '指定したときは番号を返さない');
+    call_(authenticate(target, '482913'));
+    expectError_(authenticate(target, SEED_PIN), 'AUTH_FAILED', '以前の番号は使えない');
+    // 操作ログには番号を残さない
+    const log = readAll('LOGS').filter(function (l) { return l.action === ACTIONS.ISSUE_PIN; }).pop();
+    assertTrue_(log.detail.indexOf('482913') < 0 && log.detail.indexOf('指定') >= 0, 'ログに番号が残っています: ' + log.detail);
+    // 形式の誤り
+    expectError_(adminIssuePin(ctxM, target, '12345'), 'VALIDATION', '5桁');
+    expectError_(adminIssuePin(ctxM, target, 'abc123'), 'VALIDATION', '英字');
+    // 推測しやすい番号も設定できる
+    call_(adminIssuePin(ctxM, target, '111111'));
+    call_(authenticate(target, '111111'));
+    // 空ならランダムに発行して番号を返す
+    const r = call_(adminIssuePin(ctxM, target, ''));
+    assertTrue_(r.specified === false && /^\d{6}$/.test(r.pin), 'ランダム発行');
+    // 管理者でなければ設定できない
+    const ctxU = { operatorId: target, token: createSession_(target).token };
+    expectError_(adminIssuePin(ctxU, a.admin, '222222'), 'FORBIDDEN', '管理者以外');
+    return '指定・ランダム・形式チェック・権限を確認';
+  } finally {
+    issuePin(target, 'test', SEED_PIN); // 元に戻す
+  }
 }
 
 function test_gas_workflow() {

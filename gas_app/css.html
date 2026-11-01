@@ -116,6 +116,9 @@
   .view-header { margin-bottom: 1.25rem; }
   .view-header h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-main); margin-bottom: 0.25rem; }
   .view-header p { font-size: 0.875rem; color: var(--text-muted); }
+  /* 一覧タブは見出しを1行にまとめ、表に使える高さを増やす */
+  .view-header.compact { display: flex; align-items: baseline; gap: 0.25rem 0.85rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
+  .view-header.compact h2 { margin-bottom: 0; }
   .view-header-flex { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
 
   .card-panel {
@@ -130,6 +133,7 @@
   }
   .form-section-title:first-child { margin-top: 0; }
   .form-section-title.no-border { border-bottom: none; margin: 0; padding: 0; }
+  .form-section-title + p.small { margin-bottom: 1rem; }
   .form-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
   .form-grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 1rem; }
   .form-group { margin-bottom: 1.1rem; min-width: 0; }
@@ -296,7 +300,10 @@
     display: inline-flex; align-items: center; gap: 0.3rem; padding: 0 0.75rem; height: 34px; font-size: 0.8rem; font-weight: 600;
     color: var(--text-muted); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
   }
-  .list-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; font-size: 0.85rem; color: var(--text-muted); }
+  .filter-group-status { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; }
+  .filter-row-sep { width: 1px; height: 20px; background: var(--border); margin: 0 0.35rem; }
+  .view-header-end { margin-left: auto; display: inline-flex; align-items: center; gap: 0.6rem; align-self: center; }
+  .list-count { font-size: 0.85rem; color: var(--text-muted); white-space: nowrap; }
 
   .bulk-action-bar {
     display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;
@@ -306,15 +313,22 @@
   .bulk-select-status strong { color: var(--primary); font-size: 1rem; margin: 0 0.25rem; }
 
   .table-container { overflow-x: auto; }
-  .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left; }
+  /* 一覧の表: 縦横ともこの枠の中でスクロールし、見出し行と左の列を固定する（高さは js の fitTables が画面に合わせる） */
+  .table-container.fit { overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); }
+  /* 一覧タブは広い画面で横幅を広げ、横スクロールを減らす */
+  .app-container.list-mode { max-width: 1600px; padding-bottom: 1rem; }
+  .list-panel { padding-bottom: 1rem; }
+  /* separate にしないと、固定したセルの罫線がスクロールで消える */
+  .data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.85rem; text-align: left; }
   .data-table th {
     background: var(--secondary-light); color: var(--text-muted); font-weight: 600; padding: 0.7rem 0.75rem;
-    border-bottom: 2px solid var(--border); white-space: nowrap; position: sticky; top: 0;
+    border-bottom: 2px solid var(--border); white-space: nowrap; position: sticky; top: 0; z-index: 2;
   }
-  .data-table th[data-sort] { cursor: pointer; user-select: none; }
-  .data-table th[data-sort]:hover { color: var(--text-main); }
-  .data-table th.sorted-asc::after { content: ' ▲'; font-size: 0.65rem; color: var(--primary); }
-  .data-table th.sorted-desc::after { content: ' ▼'; font-size: 0.65rem; color: var(--primary); }
+  .data-table thead [data-sort] { cursor: pointer; user-select: none; }
+  .data-table thead [data-sort]:hover { color: var(--text-main); }
+  .data-table thead .sorted-asc::after { content: ' ▲'; font-size: 0.65rem; color: var(--primary); }
+  .data-table thead .sorted-desc::after { content: ' ▼'; font-size: 0.65rem; color: var(--primary); }
+  .data-table .th-sep { color: var(--text-light); margin: 0 0.15rem; }
   .data-table td { padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
   .data-table tbody tr { background: var(--bg-card); }
   /* 操作列は右端に固定し、横スクロールしても見えるようにする */
@@ -322,23 +336,47 @@
     position: sticky; right: 0; z-index: 1; box-shadow: -8px 0 8px -8px rgba(15, 23, 42, 0.18);
   }
   .data-table td.action-cell { background: inherit; }
-  /* 入力データ一覧はボタンが多いので固定しない（横スクロールで見る） */
-  #list-table td.action-cell, #list-table th.action-head { position: static; box-shadow: none; }
-  .data-table th.action-head { background: var(--secondary-light); z-index: 2; }
-  .data-table .checkbox-cell { width: 40px; text-align: center; }
+  .data-table th.action-head { background: var(--secondary-light); z-index: 3; }
+  /* 左の列（☑・届出ID）を固定し、横スクロールしてもどの行か分かるようにする */
+  .data-table .sticky-col { position: sticky; left: 0; z-index: 1; }
+  .data-table td.sticky-col { background: inherit; }
+  .data-table th.sticky-col { z-index: 3; }
+  .data-table .sticky-col-2 { left: 40px; }
+  .data-table .sticky-last { box-shadow: 8px 0 8px -8px rgba(15, 23, 42, 0.18); }
+  .data-table .checkbox-cell { width: 40px; min-width: 40px; max-width: 40px; text-align: center; padding-left: 0; padding-right: 0; }
   .data-table .checkbox-cell input { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
   .data-table .action-head { text-align: center; }
   .data-table .action-cell { text-align: center; white-space: nowrap; vertical-align: middle; }
   .table-loading, .table-empty { text-align: center; padding: 2.5rem !important; color: var(--text-muted); font-size: 0.9rem; }
   /* ステータスの行の色（左端の色帯と薄い地。plan/05 §0.6） */
-  .data-table tr.st-row { background: color-mix(in srgb, var(--row-bg) 45%, #ffffff); box-shadow: inset 4px 0 0 var(--row-fg); }
+  .data-table tr.st-row { background: color-mix(in srgb, var(--row-bg) 45%, #ffffff); }
+  /* 色帯は先頭のセルに付ける（行に付けると、固定した列の背景で隠れる） */
+  .data-table tr.st-row > td:first-child { box-shadow: inset 4px 0 0 var(--row-fg); }
+  .data-table tr.st-row > td.sticky-col.sticky-last:first-child { box-shadow: inset 4px 0 0 var(--row-fg), 8px 0 8px -8px rgba(15, 23, 42, 0.18); }
   .data-table tr.st-row:hover { background: color-mix(in srgb, var(--row-bg) 75%, #ffffff); }
   .data-table tr.selected-row { outline: 2px solid rgba(2, 132, 199, 0.35); outline-offset: -2px; }
   .cell-id { font-family: 'Outfit', monospace; font-weight: 700; white-space: nowrap; }
-  .data-table td.cell-wrap { min-width: 150px; max-width: 260px; white-space: normal; }
+  .data-table td.cell-wrap { min-width: 160px; max-width: 260px; white-space: normal; }
   .cell-two { display: flex; flex-direction: column; gap: 0.1rem; }
   .cell-two .sub { font-family: monospace; font-size: 0.75rem; color: var(--text-muted); }
   .cell-note { color: var(--text-muted); font-size: 0.75rem; }
+  .party-stack { display: flex; flex-direction: column; gap: 0.3rem; }
+  .party-line { display: flex; align-items: flex-start; gap: 0.4rem; }
+  .party-label {
+    flex-shrink: 0; font-size: 0.68rem; font-weight: 700; color: var(--text-muted); background: var(--secondary-light);
+    border-radius: var(--radius-sm); padding: 0.05rem 0.3rem; margin-top: 0.1rem;
+  }
+  .party-body { min-width: 0; }
+  /* 入力データ一覧の操作ボタンは、多いときに2段に折り返して横幅を抑える */
+  #list-table .action-buttons { flex-wrap: wrap; max-width: 250px; margin: 0 auto; row-gap: 0.35rem; }
+  #list-table td.action-cell { min-width: 220px; }
+  #approved-table .action-buttons, #reflected-table .action-buttons { flex-wrap: wrap; max-width: 150px; margin: 0 auto; row-gap: 0.35rem; }
+  /* 発注先・納入先のコードは名称の後ろに小さく出す */
+  .party-body .cell-two { display: block; }
+  .party-body .cell-two .sub, .party-body .cell-two .warn-badge { margin-left: 0.35rem; }
+  .data-table td.party-cell { min-width: 190px; }
+  .data-table td.qty-cell { min-width: 120px; white-space: normal; }
+  .data-table td.csv-cell { min-width: 150px; white-space: normal; }
 
   /* 8. バッジ */
   .status-badge {
@@ -490,6 +528,10 @@
     .filter-group-date { flex-wrap: wrap; width: 100%; }
     .filter-group-date .filter-box-date { flex: 1 1 0; min-width: 0; }
     .data-table td.action-cell, .data-table th.action-head { position: static; box-shadow: none; }
+    .app-container.list-mode { padding-bottom: 2.5rem; }
+    .view-header-end { margin-left: 0; width: 100%; justify-content: space-between; margin-top: 0.5rem; }
+    .filter-row-sep { flex-basis: 100%; width: 0; height: 0; margin: 0; } /* ステータスを次の行から始める */
+    .view-header.compact { display: block; }
     .bulk-action-bar { flex-direction: column; align-items: stretch; }
     .toast-container { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; }
     .toast { max-width: none; }

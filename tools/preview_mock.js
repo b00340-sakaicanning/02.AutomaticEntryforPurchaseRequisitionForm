@@ -178,6 +178,31 @@
 
   loadOrSeed();
 
+  // URL のハッシュ（rows=件数）で、届出がその件数以上になるまでサンプルを足す（一覧のスクロール確認用）
+  var rowsMatch = String(location.hash || '').match(/rows=(\d+)/);
+  if (rowsMatch) {
+    try {
+      var want = Math.min(Number(rowsMatch[1]), 300);
+      var guard = 0;
+      while (fns.readAll('REQUESTS').length < want && guard++ < 60) {
+        fns.resetExecutionCache_();
+        fns.seedSampleRequests_(EMP.admin, EMP.keiri);
+      }
+      fns.resetExecutionCache_();
+      saveState();
+    } catch (e) { console.warn('サンプルを足せません: ' + e); }
+  }
+
+  // URL のハッシュ（auth=1）で、指定した操作者を暗証番号 123456 で認証済みにする（画面確認用）
+  if (/auth=1/.test(String(location.hash || ''))) {
+    try {
+      var opId = localStorage.getItem('prOperatorId');
+      var res = fns.authenticate(opId, '123456');
+      if (res && res.ok) sessionStorage.setItem('prAuth', JSON.stringify({ operatorId: opId, token: res.data.token, expiresAtMs: res.data.expiresAtMs }));
+      saveState();
+    } catch (e) { console.warn(e); }
+  }
+
   // URL のハッシュ（open=detail / material / pin / code）でダイアログを開く（画面確認用）
   var o = String(location.hash || '').match(/open=(\w+)/);
   if (o) {
@@ -190,6 +215,11 @@
         if (o[1] === 'material' && typeof openMaterialDialog === 'function') openMaterialDialog(id);
         if (o[1] === 'code' && typeof openCodeDialog === 'function') openCodeDialog(id);
         if (o[1] === 'pin' && typeof promptPin === 'function') promptPin();
+        if (o[1] === 'adminpin' && typeof switchAdminSub === 'function') {
+          switchAdminSub('pin');
+          var sp = document.querySelector('input[name="pin-mode"][value="specify"]');
+          if (sp) { sp.checked = true; onPinModeChange(); }
+        }
       }, 1500);
     });
   }

@@ -204,18 +204,19 @@
 
     <!-- ===================== 入力データ一覧 ===================== -->
     <section class="tab-view" id="view-list">
-      <div class="view-header">
+      <div class="view-header compact">
         <h2>入力データ一覧</h2>
-        <p>すべての届出を表示します（削除したものは除く）。行の色はステータスを表します。</p>
+        <p>すべての届出です（削除したものを除く）。行の色はステータスを表します。</p>
+        <span class="view-header-end"><span id="list-count" class="list-count"></span><button type="button" class="btn-secondary btn-sm" onclick="loadList('ALL')">再読み込み</button></span>
       </div>
-      <div class="card-panel">
+      <div class="card-panel list-panel">
         <div class="filter-row">
           <span class="filter-box-label">クイック</span>
           <button type="button" class="filter-btn" data-quick="mine" onclick="toggleQuick('mine')">自分の届出</button>
           <button type="button" class="filter-btn" data-quick="toApprove" onclick="toggleQuick('toApprove')">自分が承認する承認依頼中</button>
-        </div>
-        <div class="filter-row" id="status-filter-row">
+          <span class="filter-row-sep"></span>
           <span class="filter-box-label">ステータス</span>
+          <span class="filter-group-status" id="status-filter-row"></span>
         </div>
         <div class="logs-filter-container">
           <div class="search-input-box">
@@ -235,17 +236,18 @@
           </div>
           <button type="button" class="filter-reset-btn" onclick="resetListFilters()">リセット</button>
         </div>
-        <div class="list-meta"><span id="list-count"></span><button type="button" class="btn-secondary btn-sm" onclick="loadList('ALL')">再読み込み</button></div>
-        <div class="table-container">
+        <div class="table-container fit">
           <table class="data-table" id="list-table">
             <thead><tr>
-              <th data-sort="requestId">届出ID</th><th data-sort="status">ステータス</th><th data-sort="submittedDate">提出日</th>
-              <th data-sort="deptName">部門</th><th data-sort="categoryName">種別</th><th data-sort="applicantName">入力者</th>
-              <th data-sort="approverName">承認者</th><th data-sort="supplierName">発注先</th><th data-sort="deliveryName">納入先</th>
-              <th data-sort="itemName">購入物品名</th><th data-sort="quantity">数量</th><th data-sort="deliveryDate">納品日</th>
-              <th data-sort="attCount">添付</th><th data-sort="updatedAt">更新日時</th><th class="action-head">操作</th>
+              <th class="sticky-col sticky-last"><span data-sort="requestId">届出ID</span><span class="th-sep">／</span><span data-sort="status">ステータス</span></th>
+              <th><span data-sort="itemName">購入物品名</span><span class="th-sep">／</span><span data-sort="quantity">数量</span><span class="th-sep">／</span><span data-sort="attCount">添付</span></th>
+              <th><span data-sort="submittedDate">提出日</span><span class="th-sep">／</span><span data-sort="deliveryDate">納品日</span></th>
+              <th><span data-sort="deptName">部門</span><span class="th-sep">／</span><span data-sort="categoryName">種別</span></th>
+              <th><span data-sort="applicantName">入力者</span><span class="th-sep">／</span><span data-sort="approverName">承認者</span></th>
+              <th><span data-sort="supplierName">発注先</span><span class="th-sep">／</span><span data-sort="deliveryName">納入先</span></th>
+              <th data-sort="updatedAt">更新日時</th><th class="action-head">操作</th>
             </tr></thead>
-            <tbody id="list-body"><tr><td colspan="15" class="table-loading">読み込み中...</td></tr></tbody>
+            <tbody id="list-body"><tr><td colspan="8" class="table-loading">読み込み中...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -253,11 +255,11 @@
 
     <!-- ===================== 承認済一覧 ===================== -->
     <section class="tab-view" id="view-approved">
-      <div class="view-header">
+      <div class="view-header compact">
         <h2>承認済一覧</h2>
-        <p>CSV出力を待っている届出です。経理担当・管理者は資材コードと取引先コードを確定・補完してからCSVを出力します。</p>
+        <p>CSV出力を待っている届出です。資材コードと取引先コードを確定・補完してから出力します。</p>
       </div>
-      <div class="card-panel">
+      <div class="card-panel list-panel">
         <div class="logs-filter-container">
           <select class="filter-box-select" id="af-dept" onchange="renderApprovedList()"></select>
           <input type="text" class="filter-box-date filter-text" id="af-supplier" placeholder="発注先" oninput="renderApprovedList()">
@@ -280,16 +282,19 @@
             <button type="button" class="btn-primary btn-sm btn-success" id="btn-mark-reflected" onclick="markSelectedReflected()">反映済にする</button>
           </div>
         </div>
-        <div class="table-container">
+        <div class="table-container fit">
           <table class="data-table" id="approved-table">
             <thead><tr>
-              <th class="checkbox-cell"><input type="checkbox" id="approved-check-all" onchange="toggleSelectAll('approved', this.checked)"></th>
-              <th data-sort="requestId">届出ID</th><th data-sort="submittedDate">提出日</th><th data-sort="deptName">部門</th>
-              <th data-sort="supplierName">発注先</th><th data-sort="deliveryName">納入先</th><th data-sort="itemName">購入物品名</th>
-              <th data-sort="modelNo">型番</th><th data-sort="materialCode">資材コード</th><th data-sort="packQty">入数</th>
-              <th data-sort="quantity">数量</th><th data-sort="dueDate">納期</th><th data-sort="csvExportedAt">CSV出力</th><th class="action-head">操作</th>
+              <th class="checkbox-cell sticky-col"><input type="checkbox" id="approved-check-all" onchange="toggleSelectAll('approved', this.checked)"></th>
+              <th class="sticky-col sticky-col-2 sticky-last"><span data-sort="requestId">届出ID</span><span class="th-sep">／</span><span data-sort="submittedDate">提出日</span></th>
+              <th><span data-sort="itemName">購入物品名</span><span class="th-sep">／</span><span data-sort="modelNo">型番</span></th>
+              <th data-sort="deptName">部門</th>
+              <th><span data-sort="supplierName">発注先</span><span class="th-sep">／</span><span data-sort="deliveryName">納入先</span></th>
+              <th><span data-sort="materialCode">資材コード</span><span class="th-sep">／</span><span data-sort="packQty">入数</span></th>
+              <th><span data-sort="quantity">数量</span><span class="th-sep">／</span><span data-sort="dueDate">納期</span></th>
+              <th data-sort="csvExportedAt">CSV出力</th><th class="action-head">操作</th>
             </tr></thead>
-            <tbody id="approved-body"><tr><td colspan="14" class="table-loading">読み込み中...</td></tr></tbody>
+            <tbody id="approved-body"><tr><td colspan="9" class="table-loading">読み込み中...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -297,11 +302,11 @@
 
     <!-- ===================== システム反映済一覧 ===================== -->
     <section class="tab-view" id="view-reflected">
-      <div class="view-header">
+      <div class="view-header compact">
         <h2>システム反映済一覧</h2>
-        <p>販売管理システムへ反映済みの届出です（閲覧のみ）。経理担当・管理者はCSVを再出力でき、管理者は「承認済に戻す」ができます。</p>
+        <p>販売管理システムへ反映済みの届出です。CSVの再出力と、管理者による「承認済に戻す」ができます。</p>
       </div>
-      <div class="card-panel">
+      <div class="card-panel list-panel">
         <div class="logs-filter-container">
           <select class="filter-box-select" id="rf-dept" onchange="renderReflectedList()"></select>
           <input type="text" class="filter-box-date filter-text" id="rf-supplier" placeholder="発注先" oninput="renderReflectedList()">
@@ -320,16 +325,20 @@
             <button type="button" class="btn-primary btn-sm" id="btn-export-reflected" onclick="exportSelected('reflected')">CSV再出力</button>
           </div>
         </div>
-        <div class="table-container">
+        <div class="table-container fit">
           <table class="data-table" id="reflected-table">
             <thead><tr>
-              <th class="checkbox-cell"><input type="checkbox" id="reflected-check-all" onchange="toggleSelectAll('reflected', this.checked)"></th>
-              <th data-sort="requestId">届出ID</th><th data-sort="submittedDate">提出日</th><th data-sort="deptName">部門</th>
-              <th data-sort="supplierName">発注先</th><th data-sort="deliveryName">納入先</th><th data-sort="itemName">購入物品名</th>
-              <th data-sort="materialCode">資材コード</th><th data-sort="quantity">数量</th><th data-sort="dueDate">納期</th>
-              <th data-sort="csvExportedAt">CSV出力</th><th data-sort="reflectedAt">反映済日時</th><th data-sort="reflectedByName">反映操作者</th><th class="action-head">操作</th>
+              <th class="checkbox-cell sticky-col"><input type="checkbox" id="reflected-check-all" onchange="toggleSelectAll('reflected', this.checked)"></th>
+              <th class="sticky-col sticky-col-2 sticky-last"><span data-sort="requestId">届出ID</span><span class="th-sep">／</span><span data-sort="submittedDate">提出日</span></th>
+              <th data-sort="itemName">購入物品名</th>
+              <th data-sort="deptName">部門</th>
+              <th><span data-sort="supplierName">発注先</span><span class="th-sep">／</span><span data-sort="deliveryName">納入先</span></th>
+              <th data-sort="materialCode">資材コード</th>
+              <th><span data-sort="quantity">数量</span><span class="th-sep">／</span><span data-sort="dueDate">納期</span></th>
+              <th><span data-sort="csvExportedAt">CSV出力</span><span class="th-sep">／</span><span data-sort="reflectedAt">反映済</span></th>
+              <th class="action-head">操作</th>
             </tr></thead>
-            <tbody id="reflected-body"><tr><td colspan="14" class="table-loading">読み込み中...</td></tr></tbody>
+            <tbody id="reflected-body"><tr><td colspan="9" class="table-loading">読み込み中...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -371,14 +380,30 @@
         <div class="admin-subview" id="admin-sub-pin">
           <div class="card-panel">
             <h3 class="form-section-title">暗証番号の発行・再発行</h3>
-            <p class="muted small">承認者・管理者・経理として操作する社員に発行します。発行した暗証番号は1回だけ表示されます。</p>
+            <p class="muted small">承認者・管理者・経理として操作する社員に設定します。ランダムに発行した暗証番号は1回だけ表示されます。以前の暗証番号は使えなくなります。</p>
+            <div class="form-group">
+              <label>設定のしかた</label>
+              <div class="radio-group">
+                <label class="radio-pill"><input type="radio" name="pin-mode" value="random" checked onchange="onPinModeChange()"> ランダムに発行</label>
+                <label class="radio-pill"><input type="radio" name="pin-mode" value="specify" onchange="onPinModeChange()"> 番号を指定する</label>
+              </div>
+            </div>
             <div class="form-grid-3">
               <div class="form-group">
                 <label for="pin-employee">社員</label>
                 <select id="pin-employee"></select>
               </div>
+              <div class="form-group" id="pin-specify-group" style="display:none;">
+                <label for="pin-new">暗証番号 <span class="badge-required" id="pin-length-label">6桁</span></label>
+                <input type="password" id="pin-new" inputmode="numeric" autocomplete="new-password" maxlength="12" placeholder="数字">
+                <div class="field-error" id="err-pin"></div>
+              </div>
+              <div class="form-group" id="pin-confirm-group" style="display:none;">
+                <label for="pin-new2">暗証番号（確認）</label>
+                <input type="password" id="pin-new2" inputmode="numeric" autocomplete="new-password" maxlength="12" placeholder="もう一度入力">
+              </div>
               <div class="form-group form-group-button">
-                <button type="button" class="btn-primary" onclick="adminIssuePinClick()">発行する</button>
+                <button type="button" class="btn-primary" id="btn-issue-pin" onclick="adminIssuePinClick()">発行する</button>
               </div>
             </div>
             <div class="pin-result" id="pin-result" style="display:none;"></div>

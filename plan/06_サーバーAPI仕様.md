@@ -167,7 +167,7 @@ ctx = { operatorId: 'xxx@sakai-canning.co.jp', token: 'uuid または null' }
 | 関数 | 引数 | 戻り値 data | 権限 |
 |------|------|-------------|------|
 | `adminImportMasters(ctx, target)` | target | `{results:[...]}` | 管理者＋暗証番号 |
-| `adminIssuePin(ctx, employeeId)` | | `{employeeId, name, pin}` | 管理者＋暗証番号 |
+| `adminIssuePin(ctx, employeeId, pin)` | pin: 指定する番号（空ならランダム） | ランダム: `{employeeId, name, pin, specified:false}`／指定: `{employeeId, name, specified:true}`（番号は返さない） | 管理者＋暗証番号 |
 | `adminGetSettings(ctx)` | | `[{key, value, description}]` | 管理者＋暗証番号 |
 | `adminPing(ctx)` | | `{}`（タブを開くときの認証確認用） | 管理者＋暗証番号 |
 

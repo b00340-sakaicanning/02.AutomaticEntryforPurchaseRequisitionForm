@@ -131,6 +131,7 @@
     setupCombo('delivery');
     setupCodeDialogCombo();
     setupSortHeaders();
+    setupTableFit();
     setupPinModal();
     resetForm();
     const m = String(location.hash || '').match(/tab=(\w+)/);
@@ -293,13 +294,15 @@
     APP.tab = name;
     document.querySelectorAll('#main-tabs .tab-btn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === name); });
     document.querySelectorAll('.tab-view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + name); });
+    document.querySelector('.app-container').classList.toggle('list-mode', ['list', 'approved', 'reflected'].indexOf(name) >= 0);
     refreshCurrentTab(false);
+    fitTables();
   }
 
   function refreshCurrentTab(force) {
     if (!APP.operatorId && APP.tab !== 'new') {
       ['list-body', 'approved-body', 'reflected-body'].forEach(function (id) {
-        $(id).innerHTML = '<tr><td colspan="15" class="table-empty">画面上部で操作者を選択してください</td></tr>';
+        $(id).innerHTML = '<tr><td colspan="' + LIST_COLS[{ 'list-body': 'ALL', 'approved-body': 'APPROVED', 'reflected-body': 'REFLECTED' }[id]] + '" class="table-empty">画面上部で操作者を選択してください</td></tr>';
       });
       return;
     }
@@ -335,6 +338,7 @@
     $('code-delivery').innerHTML = '<option value="__KEEP__">（変更しない）</option><option value="">（コードを空にする）</option>' +
       APP.init.deliveries.map(function (d, i) { return '<option value="' + i + '">' + escapeHtml(d.name) + ' ／ ' + escapeHtml(d.code + (d.branch ? '-' + d.branch : '')) + '</option>'; }).join('');
     $('pin-employee').innerHTML = options(APP.init.employees, 'employeeId', function (e) { return e.name + '（' + (e.section || '課なし') + '）'; }, '社員を選択');
+    $('pin-length-label').textContent = (APP.init.limits.pinLength || 6) + '桁';
     const sf = $('status-filter-row');
     sf.querySelectorAll('.filter-btn').forEach(function (b) { b.remove(); });
     APP.init.statuses.forEach(function (st) {
@@ -785,19 +789,52 @@
   // -------------------------------------------------------------------------
   // 9. 一覧（plan/05 §4〜§5）
   // -------------------------------------------------------------------------
+  /** 各一覧の列数（colspan とスケルトン用） */
+  const LIST_COLS = { ALL: 8, APPROVED: 9, REFLECTED: 9 };
   async function loadList(tab) {
     const bodyId = { ALL: 'list-body', APPROVED: 'approved-body', REFLECTED: 'reflected-body' }[tab];
-    $(bodyId).innerHTML = skeletonRows(tab === 'ALL' ? 15 : 14);
+    $(bodyId).innerHTML = skeletonRows(LIST_COLS[tab]);
     try {
       const d = await api('getRequestList', { tab: tab });
       APP.lists[tab] = d.rows;
     } catch (e) {
-      $(bodyId).innerHTML = '<tr><td colspan="15" class="table-empty">' + escapeHtml(e.message) + '</td></tr>';
+      $(bodyId).innerHTML = '<tr><td colspan="' + LIST_COLS[tab] + '" class="table-empty">' + escapeHtml(e.message) + '</td></tr>';
       return;
     }
     if (tab === 'ALL') { buildListPersonOptions(); renderRequestList(); }
     if (tab === 'APPROVED') renderApprovedList();
     if (tab === 'REFLECTED') renderReflectedList();
+    fitTables();
+  }
+
+  // 表の高さを画面に合わせ、表より上の部分を固定する（表の中だけスクロールする。plan/05 §4.0）
+  const TABLE_MIN_HEIGHT = 320;
+  function fitTables() {
+    const c = document.querySelector('.tab-view.active .table-container.fit');
+    if (!c) return;
+    if (window.matchMedia('(max-width: 640px)').matches) {
+      // スマホは上の部分を固定しない。表の高さを画面の7割にして、表の中で見出しと届出IDを固定する
+      c.style.maxHeight = Math.max(TABLE_MIN_HEIGHT, Math.round(window.innerHeight * 0.7)) + 'px';
+      return;
+    }
+    const app = document.querySelector('.app-container');
+    const rect = c.getBoundingClientRect();
+    const top = rect.top + window.scrollY;
+    const below = app.getBoundingClientRect().bottom - rect.bottom; // 表より下の余白（カードとページの下の余白）
+    const h = Math.floor(window.innerHeight - top - below - 2);
+    c.style.maxHeight = Math.max(TABLE_MIN_HEIGHT, h) + 'px';
+  }
+  function setupTableFit() {
+    let timer = null;
+    const later = function () { clearTimeout(timer); timer = setTimeout(fitTables, 60); };
+    window.addEventListener('resize', later);
+    if (typeof ResizeObserver === 'function') {
+      // 絞り込みの折り返しなどで、表より上の部分の高さが変わったとき
+      const ro = new ResizeObserver(later);
+      document.querySelectorAll('.app-header, #main-tabs, .tab-view .view-header, .list-panel > :not(.table-container)').forEach(function (el) { ro.observe(el); });
+      const banner = document.querySelector('.preview-banner');
+      if (banner) ro.observe(banner);
+    }
   }
   function skeletonRows(cols) {
     let html = '';
@@ -815,7 +852,7 @@
   }
   function setupSortHeaders() {
     [['list-table', 'list', renderRequestList], ['approved-table', 'approved', renderApprovedList], ['reflected-table', 'reflected', renderReflectedList]].forEach(function (t) {
-      document.querySelectorAll('#' + t[0] + ' th[data-sort]').forEach(function (th) {
+      document.querySelectorAll('#' + t[0] + ' thead [data-sort]').forEach(function (th) {
         th.addEventListener('click', function () {
           const key = th.getAttribute('data-sort');
           const s = APP.sort[t[1]];
@@ -826,7 +863,7 @@
     });
   }
   function markSortHeader(tableId, s) {
-    document.querySelectorAll('#' + tableId + ' th[data-sort]').forEach(function (th) {
+    document.querySelectorAll('#' + tableId + ' thead [data-sort]').forEach(function (th) {
       th.classList.remove('sorted-asc', 'sorted-desc');
       if (th.getAttribute('data-sort') === s.key) th.classList.add(s.dir > 0 ? 'sorted-asc' : 'sorted-desc');
     });
@@ -845,6 +882,19 @@
   function actionBtn(label, cls, onclick, check) {
     const dis = check && !check.ok;
     return '<button type="button" class="' + cls + ' btn-sm" ' + (dis ? 'disabled title="' + escapeHtml(check.reason) + '"' : 'onclick="' + onclick + '"') + '>' + escapeHtml(label) + '</button>';
+  }
+  /** 一覧の行のボタン。押せないボタンは表示しない（理由は詳細画面で確かめる） */
+  function rowBtn(label, cls, onclick, check) { return check && !check.ok ? '' : actionBtn(label, cls, onclick); }
+  /** 2段のセル（上: 主な値 / 下: 補足） */
+  function twoLine(top, sub) { return '<div class="cell-two"><span>' + top + '</span><span class="cell-note">' + sub + '</span></div>'; }
+  /** 発注先と納入先を1つのセルに上下で表示する。withCode=true ならコードも出す */
+  function partyStack(r, withCode) {
+    const line = function (label, type, name, code, branch) {
+      return '<div class="party-line"><span class="party-label">' + label + '</span><span class="party-body">' +
+        (withCode ? partyTwo(type, name, code, branch) : partyText(type, name)) + '</span></div>';
+    };
+    return '<div class="party-stack">' + line('発注', r.supplierType, r.supplierName, r.supplierCode, r.supplierBranch) +
+      line('納入', r.deliveryType, r.deliveryName, r.deliveryCode, r.deliveryBranch) + '</div>';
   }
   function findRow(tab, id) { return (APP.lists[tab] || []).filter(function (r) { return r.requestId === id; })[0]; }
 
@@ -903,26 +953,26 @@
     }), APP.sort.list);
     markSortHeader('list-table', APP.sort.list);
     $('list-count').textContent = all.length + '件中 ' + rows.length + '件を表示';
-    if (!rows.length) { $('list-body').innerHTML = '<tr><td colspan="15" class="table-empty">該当する届出がありません</td></tr>'; return; }
+    if (!rows.length) { $('list-body').innerHTML = '<tr><td colspan="' + LIST_COLS.ALL + '" class="table-empty">該当する届出がありません</td></tr>'; return; }
     $('list-body').innerHTML = rows.map(function (r) {
       const id = escapeHtml(r.requestId);
       const editCheck = canEdit(r) ? { ok: true } : { ok: false, reason: 'この届出は修正できません' };
       return '<tr' + rowStyle(r.status) + '>' +
-        '<td class="cell-id">' + id + '</td><td>' + statusBadge(r.status) + '</td>' +
-        '<td class="nowrap">' + escapeHtml(r.submittedDate || '-') + '</td><td>' + escapeHtml(r.deptName) + '</td><td>' + escapeHtml(r.categoryName) + '</td>' +
-        '<td class="nowrap">' + escapeHtml(r.applicantName) + '</td><td class="nowrap">' + escapeHtml(r.approverName) + '</td>' +
-        '<td class="cell-wrap">' + partyText(r.supplierType, r.supplierName) + '</td><td class="cell-wrap">' + partyText(r.deliveryType, r.deliveryName) + '</td>' +
-        '<td class="cell-wrap">' + escapeHtml(r.itemName) + '</td><td class="nowrap">' + escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + '</td>' +
-        '<td class="nowrap">' + escapeHtml(r.deliveryDate || '-') + '</td><td class="nowrap">' + (r.attCount ? '📎×' + r.attCount : '-') + '</td>' +
-        '<td class="nowrap small">' + escapeHtml(r.updatedAt) + '</td>' +
+        '<td class="sticky-col sticky-last"><div class="cell-two"><span class="cell-id">' + id + '</span><span>' + statusBadge(r.status) + '</span></div></td>' +
+        '<td class="cell-wrap">' + twoLine(escapeHtml(r.itemName || '-'), escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + (r.attCount ? ' ・ 📎×' + r.attCount : '')) + '</td>' +
+        '<td class="nowrap">' + twoLine(escapeHtml(r.submittedDate || '-'), '納品 ' + escapeHtml(r.deliveryDate || '-')) + '</td>' +
+        '<td class="nowrap">' + twoLine(escapeHtml(r.deptName || '-'), escapeHtml(r.categoryName || '-')) + '</td>' +
+        '<td class="nowrap">' + twoLine(escapeHtml(r.applicantName || '-'), '承認 ' + escapeHtml(r.approverName || '-')) + '</td>' +
+        '<td class="cell-wrap">' + partyStack(r, false) + '</td>' +
+        '<td class="nowrap">' + dateTimeCell(r.updatedAt) + '</td>' +
         '<td class="action-cell"><div class="action-buttons">' +
         actionBtn('詳細', 'btn-edit', "openDetail('" + id + "')") +
-        actionBtn('修正', 'btn-edit', "openEdit('" + id + "')", editCheck) +
-        actionBtn('承認依頼', 'btn-secondary', "listAction('REQUEST','" + id + "')", canDo('REQUEST', r)) +
-        actionBtn('承認依頼取消', 'btn-danger-outline', "listAction('CANCEL_REQUEST','" + id + "')", canDo('CANCEL_REQUEST', r)) +
-        actionBtn('承認', 'btn-primary', "listAction('APPROVE','" + id + "')", canDo('APPROVE', r)) +
-        actionBtn('差し戻し', 'btn-danger-outline', "listAction('REJECT','" + id + "')", canDo('REJECT', r)) +
-        actionBtn('削除', 'btn-danger-outline', "listAction('DELETE','" + id + "')", canDo('DELETE', r)) +
+        rowBtn('修正', 'btn-edit', "openEdit('" + id + "')", editCheck) +
+        rowBtn('承認依頼', 'btn-secondary', "listAction('REQUEST','" + id + "')", canDo('REQUEST', r)) +
+        rowBtn('承認依頼取消', 'btn-danger-outline', "listAction('CANCEL_REQUEST','" + id + "')", canDo('CANCEL_REQUEST', r)) +
+        rowBtn('承認', 'btn-primary', "listAction('APPROVE','" + id + "')", canDo('APPROVE', r)) +
+        rowBtn('差し戻し', 'btn-danger-outline', "listAction('REJECT','" + id + "')", canDo('REJECT', r)) +
+        rowBtn('削除', 'btn-danger-outline', "listAction('DELETE','" + id + "')", canDo('DELETE', r)) +
         '</div></td></tr>';
     }).join('');
   }
@@ -942,11 +992,21 @@
       '<span class="warn-badge amber">資材未確定</span></div>';
   }
   function csvCell(r) {
-    if (r.warnings && r.warnings.needReexport) return '<div class="cell-two"><span class="warn-badge red">要再出力</span><span class="cell-note">前回 ' + escapeHtml(r.csvExportedAt) + '（' + r.csvExportCount + '回）</span></div>';
-    if (r.csvExported) return '<div class="cell-two"><span class="small">' + escapeHtml(r.csvExportedAt) + '</span><span class="cell-note">' + r.csvExportCount + '回</span></div>';
+    if (r.warnings && r.warnings.needReexport) return '<div class="cell-two"><span class="warn-badge red">要再出力</span><span class="cell-note">前回 ' + escapeHtml(shortDateTime(r.csvExportedAt)) + '（' + r.csvExportCount + '回）</span></div>';
+    if (r.csvExported) return '<div class="cell-two"><span class="small">' + escapeHtml(shortDateTime(r.csvExportedAt)) + '（' + r.csvExportCount + '回）</span></div>';
     return '<span class="muted">未出力</span>';
   }
-  function dueCell(r) { return '<span class="nowrap">' + escapeHtml(r.dueDate || '-') + '</span>' + (r.dueFilled ? '<br><span class="cell-note">（補完）</span>' : ''); }
+  /** 一覧では日時の秒を省く（yyyy/MM/dd HH:mm） */
+  function shortDateTime(v) { return String(v || '').substr(0, 16); }
+  /** 日時を日付と時刻の2段にする */
+  function dateTimeCell(v) {
+    const m = String(v || '').match(/^(\S+)\s+(\S+)$/);
+    return m ? twoLine('<span class="small">' + escapeHtml(m[1]) + '</span>', escapeHtml(m[2])) : '<span class="small">' + escapeHtml(v || '-') + '</span>';
+  }
+  function qtyDueCell(r) {
+    return '<div class="cell-two"><span>' + escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + '</span>' +
+      '<span class="cell-note"><span class="nowrap">納期 ' + escapeHtml(r.dueDate || '-') + '</span>' + (r.dueFilled ? '<span class="nowrap">（補完）</span>' : '') + '</span></div>';
+  }
 
   function filterByCommon(rows, prefix, dateKey) {
     const dept = $(prefix + '-dept').value;
@@ -979,21 +1039,21 @@
     $('btn-mark-reflected').disabled = !privileged;
     $('btn-export-approved').title = privileged ? '' : '経理担当・管理者だけが行えます';
     $('btn-mark-reflected').title = privileged ? '' : '経理担当・管理者だけが行えます';
-    if (!rows.length) { $('approved-body').innerHTML = '<tr><td colspan="14" class="table-empty">承認済の届出はありません</td></tr>'; updateSelectedCount('approved'); return; }
+    if (!rows.length) { $('approved-body').innerHTML = '<tr><td colspan="' + LIST_COLS.APPROVED + '" class="table-empty">承認済の届出はありません</td></tr>'; updateSelectedCount('approved'); return; }
     $('approved-body').innerHTML = rows.map(function (r) {
       const id = escapeHtml(r.requestId);
       const sel = APP.selected.approved.has(r.requestId);
       return '<tr' + rowStyle(r.status) + (sel ? ' data-selected="1"' : '') + '>' +
-        '<td class="checkbox-cell"><input type="checkbox" ' + (sel ? 'checked ' : '') + 'onchange="toggleSelect(\'approved\',\'' + id + '\',this.checked)"></td>' +
-        '<td class="cell-id">' + id + '</td><td class="nowrap">' + escapeHtml(r.submittedDate) + '</td><td>' + escapeHtml(r.deptName) + '</td>' +
-        '<td class="cell-wrap">' + partyTwo(r.supplierType, r.supplierName, r.supplierCode, r.supplierBranch) + '</td>' +
-        '<td class="cell-wrap">' + partyTwo(r.deliveryType, r.deliveryName, r.deliveryCode, r.deliveryBranch) + '</td>' +
-        '<td class="cell-wrap">' + escapeHtml(r.itemName) + '</td><td>' + escapeHtml(r.modelNo || '-') + '</td>' +
-        '<td class="cell-wrap">' + materialCell(r) + '</td><td>' + escapeHtml(r.materialFixed && r.materialCode ? r.packQty : '-') + '</td>' +
-        '<td class="nowrap">' + escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + '</td><td>' + dueCell(r) + '</td><td>' + csvCell(r) + '</td>' +
+        '<td class="checkbox-cell sticky-col"><input type="checkbox" ' + (sel ? 'checked ' : '') + 'onchange="toggleSelect(\'approved\',\'' + id + '\',this.checked)"></td>' +
+        '<td class="sticky-col sticky-col-2 sticky-last">' + twoLine('<span class="cell-id">' + id + '</span>', '提出 ' + escapeHtml(r.submittedDate || '-')) + '</td>' +
+        '<td class="cell-wrap">' + twoLine(escapeHtml(r.itemName || '-'), '型番 ' + escapeHtml(r.modelNo || '-')) + '</td>' +
+        '<td class="nowrap">' + escapeHtml(r.deptName) + '</td>' +
+        '<td class="cell-wrap party-cell">' + partyStack(r, true) + '</td>' +
+        '<td class="cell-wrap">' + materialCell(r) + (r.materialFixed && r.materialCode ? '<div class="cell-note">入数 ' + escapeHtml(r.packQty || '-') + '</div>' : '') + '</td>' +
+        '<td class="qty-cell">' + qtyDueCell(r) + '</td><td>' + csvCell(r) + '</td>' +
         '<td class="action-cell"><div class="action-buttons">' +
-        actionBtn('資材', 'btn-edit', "openMaterialDialog('" + id + "')", canDo('FIX_MATERIAL', r)) +
-        actionBtn('コード', 'btn-edit', "openCodeDialog('" + id + "')", canDo('FILL_CODE', r)) +
+        rowBtn('資材', 'btn-edit', "openMaterialDialog('" + id + "')", canDo('FIX_MATERIAL', r)) +
+        rowBtn('コード', 'btn-edit', "openCodeDialog('" + id + "')", canDo('FILL_CODE', r)) +
         actionBtn('詳細', 'btn-secondary', "openDetail('" + id + "')") +
         '</div></td></tr>';
     }).join('');
@@ -1010,20 +1070,21 @@
     const privileged = isAdmin() || isAccounting();
     $('btn-export-reflected').disabled = !privileged;
     $('btn-export-reflected').title = privileged ? '' : '経理担当・管理者だけが行えます';
-    if (!rows.length) { $('reflected-body').innerHTML = '<tr><td colspan="14" class="table-empty">システム反映済の届出はありません</td></tr>'; updateSelectedCount('reflected'); return; }
+    if (!rows.length) { $('reflected-body').innerHTML = '<tr><td colspan="' + LIST_COLS.REFLECTED + '" class="table-empty">システム反映済の届出はありません</td></tr>'; updateSelectedCount('reflected'); return; }
     $('reflected-body').innerHTML = rows.map(function (r) {
       const id = escapeHtml(r.requestId);
       const sel = APP.selected.reflected.has(r.requestId);
       return '<tr' + rowStyle(r.status) + '>' +
-        '<td class="checkbox-cell"><input type="checkbox" ' + (sel ? 'checked ' : '') + 'onchange="toggleSelect(\'reflected\',\'' + id + '\',this.checked)"></td>' +
-        '<td class="cell-id">' + id + '</td><td class="nowrap">' + escapeHtml(r.submittedDate) + '</td><td>' + escapeHtml(r.deptName) + '</td>' +
-        '<td class="cell-wrap">' + partyTwo(r.supplierType, r.supplierName, r.supplierCode, r.supplierBranch) + '</td>' +
-        '<td class="cell-wrap">' + partyTwo(r.deliveryType, r.deliveryName, r.deliveryCode, r.deliveryBranch) + '</td>' +
-        '<td class="cell-wrap">' + escapeHtml(r.itemName) + '</td><td class="cell-wrap">' + materialCell(r) + '</td>' +
-        '<td class="nowrap">' + escapeHtml(r.quantity) + ' ' + escapeHtml(r.unitNote || '') + '</td><td>' + dueCell(r) + '</td><td>' + csvCell(r) + '</td>' +
-        '<td class="nowrap small">' + escapeHtml(r.reflectedAt) + '</td><td class="nowrap">' + escapeHtml(r.reflectedByName) + '</td>' +
+        '<td class="checkbox-cell sticky-col"><input type="checkbox" ' + (sel ? 'checked ' : '') + 'onchange="toggleSelect(\'reflected\',\'' + id + '\',this.checked)"></td>' +
+        '<td class="sticky-col sticky-col-2 sticky-last">' + twoLine('<span class="cell-id">' + id + '</span>', '提出 ' + escapeHtml(r.submittedDate || '-')) + '</td>' +
+        '<td class="cell-wrap">' + escapeHtml(r.itemName || '-') + '</td>' +
+        '<td class="nowrap">' + escapeHtml(r.deptName) + '</td>' +
+        '<td class="cell-wrap party-cell">' + partyStack(r, true) + '</td>' +
+        '<td class="cell-wrap">' + materialCell(r) + '</td>' +
+        '<td class="qty-cell">' + qtyDueCell(r) + '</td>' +
+        '<td class="csv-cell">' + csvCell(r) + '<div class="cell-note"><span class="nowrap">反映 ' + escapeHtml(shortDateTime(r.reflectedAt) || '-') + '</span> <span class="nowrap">' + escapeHtml(r.reflectedByName || '') + '</span></div></td>' +
         '<td class="action-cell"><div class="action-buttons">' +
-        actionBtn('承認済に戻す', 'btn-danger-outline', "listAction('REVERT_REFLECTED','" + id + "')", canDo('REVERT_REFLECTED', r)) +
+        rowBtn('承認済に戻す', 'btn-danger-outline', "listAction('REVERT_REFLECTED','" + id + "')", canDo('REVERT_REFLECTED', r)) +
         actionBtn('詳細', 'btn-secondary', "openDetail('" + id + "')") +
         '</div></td></tr>';
     }).join('');
@@ -1306,15 +1367,66 @@
       await reloadInitData();
     });
   }
+  function pinMode() {
+    const r = document.querySelector('input[name="pin-mode"]:checked');
+    return r ? r.value : 'random';
+  }
+  function onPinModeChange() {
+    const specify = pinMode() === 'specify';
+    const len = APP.init.limits.pinLength || 6;
+    $('pin-specify-group').style.display = specify ? '' : 'none';
+    $('pin-confirm-group').style.display = specify ? '' : 'none';
+    $('pin-length-label').textContent = len + '桁';
+    $('btn-issue-pin').textContent = specify ? '設定する' : '発行する';
+    $('pin-new').value = ''; $('pin-new2').value = ''; $('err-pin').textContent = '';
+    $('pin-result').style.display = 'none';
+  }
+  /** 管理者が指定する暗証番号の形式チェック（サーバーの validatePin_ と同じ決まり） */
+  function checkPinInput(pin, pin2) {
+    const len = APP.init.limits.pinLength || 6;
+    const s = toHalfWidth(pin).trim();
+    if (!s) return '暗証番号を入力してください';
+    if (!/^\d+$/.test(s)) return '暗証番号は数字だけで入力してください';
+    if (s.length !== len) return '暗証番号は' + len + '桁の数字で入力してください';
+    if (s !== toHalfWidth(pin2).trim()) return '確認用の暗証番号が一致しません';
+    return '';
+  }
   async function adminIssuePinClick() {
     const id = $('pin-employee').value;
     if (!id) { showToast('社員を選択してください', 'warning'); return; }
-    if (!await showCustomConfirm('暗証番号の発行', employeeName(id) + ' さんの暗証番号を発行します。以前の暗証番号は使えなくなります。', { okText: '発行する' })) return;
-    await run('発行しています...', async function () {
-      const d = await api('adminIssuePin', id);
+    const specify = pinMode() === 'specify';
+    let pin = '';
+    if (specify) {
+      const err = checkPinInput($('pin-new').value, $('pin-new2').value);
+      $('err-pin').textContent = err;
+      if (err) return;
+      pin = toHalfWidth($('pin-new').value).trim();
+    }
+    const msg = employeeName(id) + ' さんの暗証番号を' + (specify ? '、入力した番号に設定します。' : 'ランダムに発行します。') + '以前の暗証番号は使えなくなります。';
+    if (!await showCustomConfirm(specify ? '暗証番号の設定' : '暗証番号の発行', msg, { okText: specify ? '設定する' : '発行する' })) return;
+    await run(specify ? '設定しています...' : '発行しています...', async function () {
+      let d;
+      try {
+        d = await api('adminIssuePin', id, pin);
+      } catch (e) {
+        if (e.code === 'VALIDATION' && e.fields && e.fields.pin) $('err-pin').textContent = e.fields.pin;
+        throw e;
+      }
       const box = $('pin-result');
       box.style.display = '';
-      box.innerHTML = '<div>' + escapeHtml(d.name) + ' さんの暗証番号</div><div class="pin-value">' + escapeHtml(d.pin) + '</div><div class="small muted">本人に伝えてください。この画面を閉じると再表示できません。</div>';
+      if (d.specified) {
+        box.innerHTML = '<div><strong>' + escapeHtml(d.name) + '</strong> さんに、指定した暗証番号を設定しました。</div><div class="small muted">本人に番号を伝えてください。</div>';
+        $('pin-new').value = ''; $('pin-new2').value = '';
+      } else {
+        box.innerHTML = '<div>' + escapeHtml(d.name) + ' さんの暗証番号</div><div class="pin-value">' + escapeHtml(d.pin) + '</div><div class="small muted">本人に伝えてください。この画面を閉じると再表示できません。</div>';
+      }
+      // 自分の暗証番号を変えたときは、今の認証を解除する（次の操作で新しい番号を入力する）
+      if (id === APP.operatorId) {
+        await callServer_('logout', [ctx()]);
+        clearAuth();
+        APP.adminReady = false;
+        showToast('自分の暗証番号を変えたため、認証を解除しました。次の操作では新しい暗証番号を入力してください', 'info');
+      }
     });
   }
   async function loadAdminSettings() {
